@@ -128,7 +128,7 @@ fn is_dangerous_env_var(name: &str) -> bool {
 /// payload runs.
 ///
 /// If this file exists on the host, the bwrap payload is wrapped as
-/// `/bin/sh -c '. <path>; exec "$@"' sh <original payload...>` so the script's
+/// `/bin/bash -c '. <path>; exec "$@"' bash <original payload...>` so the script's
 /// effects (PATH tweaks, env vars, other setup) apply to the sandboxed command.
 /// If it does not exist, bwrap is launched exactly as before.
 ///
@@ -687,10 +687,10 @@ impl Sandbox {
                 "wrapping bwrap payload with init script"
             );
             cmd.arg("--")
-                .arg("/bin/sh")
+                .arg("/bin/bash")
                 .arg("-c")
                 .arg(format!(". {BWRAP_INIT_SCRIPT}; exec \"$@\""))
-                .arg("sh")
+                .arg("bash")
                 .arg(program);
             for arg in args {
                 cmd.arg(arg);
