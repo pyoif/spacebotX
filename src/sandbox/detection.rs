@@ -89,6 +89,7 @@ async fn check_bubblewrap() -> Result<BubblewrapProbe, Box<dyn std::error::Error
     let preflight = Command::new("bwrap")
         .args([
             "--unshare-user",
+            "--unshare-pid",
             "--ro-bind",
             "/",
             "/",

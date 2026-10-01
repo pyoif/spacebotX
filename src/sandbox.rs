@@ -530,7 +530,11 @@ impl Sandbox {
         // bwrap fails with "Creating new namespace failed: Operation
         // not permitted". --unshare-user makes bwrap become root in the new
         // user namespace, which then permits the other namespace flags.
+        // --unshare-pid must also precede the --proc mount below: without a
+        // PID namespace bwrap cannot mount /proc, and it fails with
+        // "Can't mount proc on /newroot/proc: Operation not permitted".
         cmd.arg("--unshare-user");
+        cmd.arg("--unshare-pid");
 
         // Mount order matters — later mounts override earlier ones.
         // 1. Mount a minimal read-only runtime allowlist.
@@ -1068,6 +1072,7 @@ async fn detect_bubblewrap() -> InternalBackend {
     let proc_check = Command::new("bwrap")
         .args([
             "--unshare-user",
+            "--unshare-pid",
             "--ro-bind",
             "/",
             "/",
