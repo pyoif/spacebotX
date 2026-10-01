@@ -8,11 +8,12 @@ use crate::{Attachment, InboundMessage, MessageContent, OutboundResponse, Status
 use anyhow::Context as _;
 use arc_swap::ArcSwap;
 use regex::Regex;
+use serde_json::json;
 use teloxide::payloads::setters::*;
 use teloxide::requests::{Request, Requester};
 use teloxide::types::{
     BotCommand, ChatAction, ChatId, FileId, InputFile, InputPollOption, MediaKind, MessageId,
-    MessageKind, ParseMode, ReactionType, ReplyParameters, UpdateKind, UserId,
+    MessageKind, ParseMode, ReactionType, ReplyParameters, ThreadId, UpdateKind, UserId,
 };
 use teloxide::{ApiError, Bot, RequestError};
 
@@ -24,6 +25,32 @@ use tokio::task::JoinHandle;
 
 /// Maximum number of rejected DM users to remember.
 const REJECTED_USERS_CAPACITY: usize = 50;
+
+/// Telegram's `General` forum topic id.
+///
+/// Every forum supergroup has a General topic whose thread id is always `1`.
+/// The Bot API rejects sends that explicitly target it with
+/// `message_thread_id: 1`, so the parameter must be omitted entirely for the
+/// General topic. Inbound messages in the General topic usually arrive with no
+/// thread id at all, so the General topic keeps the bare `telegram:{chat_id}`
+/// conversation key.
+const GENERAL_TOPIC_ID: i32 = 1;
+
+/// Telegram Bot API method for sending rich messages (supports GFM pipe tables
+/// and other rich formatting via the `rich_message.markdown` field).
+const SEND_RICH_MESSAGE_METHOD: &str = "sendRichMessage";
+
+/// Maximum UTF-8 length accepted by the Bot API's rich message endpoints.
+const RICH_MESSAGE_LENGTH: usize = 32768;
+
+/// Environment variable that enables the rich-message send path.
+///
+/// Values: unset or any value other than the disabling set below → rich enabled
+/// (default, so the new path is exercised); `0`, `false`, `no`, or `off`
+/// (case-insensitive) → rich disabled, classic HTML path only.
+///
+/// Read once on first outbound send and cached, so toggling requires a restart.
+const TELEGRAM_RICH_MESSAGES_ENV: &str = "SPACEBOT_TELEGRAM_RICH_MESSAGES";
 
 /// Telegram adapter state.
 pub struct TelegramAdapter {
@@ -127,10 +154,80 @@ impl TelegramAdapter {
         Ok(MessageId(id))
     }
 
+    /// Extract the forum topic (thread) id carried on an inbound message, if any.
+    ///
+    /// The General topic is treated as "no topic" so that outbound sends keep
+    /// omitting `message_thread_id` (the Bot API rejects an explicit `1`).
+    fn extract_thread_id(&self, message: &InboundMessage) -> Option<ThreadId> {
+        message
+            .metadata
+            .get("telegram_thread_id")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32)
+            .filter(|id| *id != GENERAL_TOPIC_ID)
+            .map(|id| ThreadId(MessageId(id)))
+    }
+
     async fn stop_typing(&self, conversation_id: &str) {
         if let Some(handle) = self.typing_tasks.write().await.remove(conversation_id) {
             handle.abort();
         }
+    }
+
+    /// Send a plain/formatted text message, preferring the Bot API rich-message
+    /// endpoint when it is enabled and the text fits within its length limit.
+    ///
+    /// Falls back to the classic `sendMessage` + HTML path (via
+    /// [`send_formatted`]) when rich sending is disabled, the text is too long
+    /// for a single rich message, or the rich request fails. Any rich failure
+    /// therefore still delivers the message through the classic path.
+    ///
+    /// `thread_id` targets a forum topic when present. The General topic is
+    /// represented by `None` (see [`GENERAL_TOPIC_ID`]), so the parameter is
+    /// omitted entirely for it.
+    async fn send_text(
+        &self,
+        chat_id: ChatId,
+        text: &str,
+        reply_to: Option<MessageId>,
+        thread_id: Option<ThreadId>,
+    ) -> anyhow::Result<()> {
+        if rich_messages_enabled() && text.len() <= RICH_MESSAGE_LENGTH {
+            match send_rich_message(&self.bot, chat_id, text, reply_to, thread_id).await {
+                Ok(()) => {
+                    tracing::debug!(
+                        path = "rich",
+                        chat_id = chat_id.0,
+                        "telegram message sent via rich endpoint"
+                    );
+                    return Ok(());
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        chat_id = chat_id.0,
+                        "telegram rich send failed, falling back to classic send"
+                    );
+                }
+            }
+        } else if !rich_messages_enabled() {
+            tracing::debug!(
+                path = "classic",
+                reason = "rich_disabled",
+                chat_id = chat_id.0,
+                "telegram message sent via classic endpoint"
+            );
+        } else {
+            tracing::debug!(
+                path = "classic",
+                reason = "exceeds_rich_limit",
+                len = text.len(),
+                chat_id = chat_id.0,
+                "telegram message sent via classic endpoint"
+            );
+        }
+
+        send_formatted(&self.bot, chat_id, text, reply_to, thread_id).await
     }
 }
 
@@ -280,7 +377,20 @@ impl Messaging for TelegramAdapter {
                             }
 
                             let content = build_content(&bot, message, &text).await;
-                            let base_conversation_id = format!("telegram:{chat_id}");
+
+                            // Forum supergroups expose a per-message topic id.
+                            // General-topic messages either omit it or carry `1`;
+                            // both are treated as "no topic" so the conversation
+                            // key and outbound sends match non-forum behavior.
+                            let topic_id: Option<i32> = message
+                                .thread_id
+                                .map(|thread| thread.0.0)
+                                .filter(|id| *id != GENERAL_TOPIC_ID);
+
+                            let base_conversation_id = match topic_id {
+                                Some(thread_id) => format!("telegram:{chat_id}:{thread_id}"),
+                                None => format!("telegram:{chat_id}"),
+                            };
                             let conversation_id = apply_runtime_adapter_to_conversation_id(
                                 &runtime_key,
                                 base_conversation_id,
@@ -332,15 +442,16 @@ impl Messaging for TelegramAdapter {
         response: OutboundResponse,
     ) -> crate::Result<()> {
         let chat_id = self.extract_chat_id(message)?;
+        let thread_id = self.extract_thread_id(message);
 
         match response {
             OutboundResponse::Text(text) => {
                 self.stop_typing(&message.conversation_id).await;
-                send_formatted(&self.bot, chat_id, &text, None).await?;
+                self.send_text(chat_id, &text, None, thread_id).await?;
             }
             OutboundResponse::RichMessage { text, poll, .. } => {
                 self.stop_typing(&message.conversation_id).await;
-                send_formatted(&self.bot, chat_id, &text, None).await?;
+                self.send_text(chat_id, &text, None, thread_id).await?;
 
                 if let Some(poll_data) = poll {
                     send_poll(&self.bot, chat_id, &poll_data).await?;
@@ -352,9 +463,13 @@ impl Messaging for TelegramAdapter {
             } => {
                 self.stop_typing(&message.conversation_id).await;
 
-                // Telegram doesn't have named threads. Reply to the source message instead.
+                // Telegram has no named threads, but forum supergroups have
+                // topics. Target the originating topic (when present) and reply
+                // to the source message so the response is threaded in both
+                // senses. The General topic is passed as `None` so
+                // `message_thread_id` is omitted on the wire.
                 let reply_to = self.extract_message_id(message).ok();
-                send_formatted(&self.bot, chat_id, &text, reply_to).await?;
+                self.send_text(chat_id, &text, reply_to, thread_id).await?;
             }
             OutboundResponse::File {
                 filename,
@@ -548,9 +663,11 @@ impl Messaging for TelegramAdapter {
             OutboundResponse::StreamStart => {
                 self.stop_typing(&message.conversation_id).await;
 
-                let placeholder = self
-                    .bot
-                    .send_message(chat_id, "...")
+                let mut placeholder_request = self.bot.send_message(chat_id, "...");
+                if let Some(topic_id) = thread_id {
+                    placeholder_request = placeholder_request.message_thread_id(topic_id);
+                }
+                let placeholder = placeholder_request
                     .send()
                     .await
                     .context("failed to send stream placeholder")?;
@@ -612,11 +729,11 @@ impl Messaging for TelegramAdapter {
             OutboundResponse::RemoveReaction(_) => {} // no-op
             OutboundResponse::Ephemeral { text, .. } => {
                 // Telegram has no ephemeral messages — send as regular text
-                send_formatted(&self.bot, chat_id, &text, None).await?;
+                self.send_text(chat_id, &text, None, thread_id).await?;
             }
             OutboundResponse::ScheduledMessage { text, .. } => {
                 // Telegram has no scheduled messages — send immediately
-                send_formatted(&self.bot, chat_id, &text, None).await?;
+                self.send_text(chat_id, &text, None, thread_id).await?;
             }
         }
 
@@ -631,6 +748,7 @@ impl Messaging for TelegramAdapter {
         match status {
             StatusUpdate::Thinking => {
                 let chat_id = self.extract_chat_id(message)?;
+                let thread_id = self.extract_thread_id(message);
                 let bot = self.bot.clone();
                 let conversation_id = message.conversation_id.clone();
 
@@ -638,11 +756,11 @@ impl Messaging for TelegramAdapter {
                 // Send one immediately, then repeat every 4 seconds.
                 let handle = tokio::spawn(async move {
                     loop {
-                        if let Err(error) = bot
-                            .send_chat_action(chat_id, ChatAction::Typing)
-                            .send()
-                            .await
-                        {
+                        let mut request = bot.send_chat_action(chat_id, ChatAction::Typing);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        if let Err(error) = request.send().await {
                             tracing::debug!(%error, "failed to send typing indicator");
                             break;
                         }
@@ -671,9 +789,9 @@ impl Messaging for TelegramAdapter {
         );
 
         if let OutboundResponse::Text(text) = response {
-            send_formatted(&self.bot, chat_id, &text, None).await?;
+            self.send_text(chat_id, &text, None, None).await?;
         } else if let OutboundResponse::RichMessage { text, poll, .. } = response {
-            send_formatted(&self.bot, chat_id, &text, None).await?;
+            self.send_text(chat_id, &text, None, None).await?;
 
             if let Some(poll_data) = poll {
                 send_poll(&self.bot, chat_id, &poll_data).await?;
@@ -921,6 +1039,15 @@ fn build_metadata(
         "telegram_message_id".into(),
         serde_json::Value::Number(message.id.0.into()),
     );
+
+    // Forum topic id, when present. General (1) is stored too so outbound can
+    // consistently treat it as "no topic" via `extract_thread_id`.
+    if let Some(thread_id) = message.thread_id {
+        metadata.insert(
+            "telegram_thread_id".into(),
+            serde_json::Value::Number(thread_id.0.0.into()),
+        );
+    }
     metadata.insert(
         crate::metadata_keys::MESSAGE_ID.into(),
         serde_json::Value::String(message.id.0.to_string()),
@@ -1369,8 +1496,12 @@ async fn send_plain_text(
     chat_id: ChatId,
     text: &str,
     reply_to: Option<MessageId>,
+    thread_id: Option<ThreadId>,
 ) -> anyhow::Result<()> {
     let mut request = bot.send_message(chat_id, text);
+    if let Some(topic_id) = thread_id {
+        request = request.message_thread_id(topic_id);
+    }
     if let Some(reply_id) = reply_to {
         request = request.reply_parameters(ReplyParameters::new(reply_id));
     }
@@ -1381,6 +1512,97 @@ async fn send_plain_text(
     Ok(())
 }
 
+/// Whether the rich-message send path is enabled.
+///
+/// Reads [`TELEGRAM_RICH_MESSAGES_ENV`] once and caches the result for the
+/// process lifetime so the outbound hot path does not repeatedly hit the
+/// environment. Defaults to enabled; the disabling values are `0`, `false`,
+/// `no`, and `off` (case-insensitive, surrounding whitespace ignored).
+fn rich_messages_enabled() -> bool {
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        match std::env::var(TELEGRAM_RICH_MESSAGES_ENV) {
+            Ok(value) => {
+                let normalized = value.trim().to_ascii_lowercase();
+                !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
+            }
+            Err(_) => true,
+        }
+    });
+    *ENABLED
+}
+
+/// Send a message via the Bot API `sendRichMessage` endpoint using raw HTTP.
+///
+/// Payload shape (see <https://core.telegram.org/bots/api#sendrichmessage>):
+/// `chat_id`, `rich_message.markdown` (exactly one of `markdown`/`html`/
+/// `blocks` is required), and `reply_parameters` when replying to a message.
+///
+/// Any transport error, non-2xx status, or Bot API `ok: false` envelope is
+/// returned as an error so the caller can fall back to the classic path.
+/// The response body is only read on failure (success bodies are ignored, so
+/// there is no per-send deserialisation cost).
+async fn send_rich_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    text: &str,
+    reply_to: Option<MessageId>,
+    thread_id: Option<ThreadId>,
+) -> anyhow::Result<()> {
+    let mut url = bot.api_url();
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("cannot-be-a-base URL"))?;
+        segments.push(&format!("bot{}", bot.token()));
+        segments.push(SEND_RICH_MESSAGE_METHOD);
+    }
+
+    let mut payload = json!({
+        "chat_id": chat_id.0,
+        "rich_message": { "markdown": text },
+    });
+    // Omit `message_thread_id` entirely for the General topic (represented as
+    // `None`); the Bot API rejects an explicit `1`.
+    if let Some(topic_id) = thread_id {
+        payload["message_thread_id"] = json!(topic_id.0.0);
+    }
+    if let Some(reply_id) = reply_to {
+        payload["reply_parameters"] = json!({ "message_id": reply_id.0 });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("failed to build telegram rich-message HTTP client")?;
+
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .await
+        .context("sendRichMessage request failed")?;
+
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .context("failed to parse sendRichMessage response")?;
+
+    if !status.is_success() || body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let description = body
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("no description");
+        anyhow::bail!(
+            "sendRichMessage rejected with status {}: {}",
+            status.as_u16(),
+            description
+        );
+    }
+
+    Ok(())
+}
+
 /// Send a message with Telegram HTML formatting, splitting at the message
 /// length limit. Falls back to plain text if the API rejects the HTML.
 async fn send_formatted(
@@ -1388,6 +1610,7 @@ async fn send_formatted(
     chat_id: ChatId,
     text: &str,
     reply_to: Option<MessageId>,
+    thread_id: Option<ThreadId>,
 ) -> anyhow::Result<()> {
     let mut pending_chunks: VecDeque<String> =
         VecDeque::from(split_message(text, MAX_MESSAGE_LENGTH));
@@ -1404,20 +1627,23 @@ async fn send_formatted(
             }
 
             let plain_chunk = strip_html_tags(&html_chunk);
-            send_plain_text(bot, chat_id, &plain_chunk, reply_to).await?;
+            send_plain_text(bot, chat_id, &plain_chunk, reply_to, thread_id).await?;
             continue;
         }
 
         let mut request = bot
             .send_message(chat_id, &html_chunk)
             .parse_mode(ParseMode::Html);
+        if let Some(topic_id) = thread_id {
+            request = request.message_thread_id(topic_id);
+        }
         if let Some(reply_id) = reply_to {
             request = request.reply_parameters(ReplyParameters::new(reply_id));
         }
         if let Err(error) = request.send().await {
             tracing::debug!(%error, "HTML send failed, retrying as plain text");
             let plain_chunk = strip_html_tags(&html_chunk);
-            send_plain_text(bot, chat_id, &plain_chunk, reply_to).await?;
+            send_plain_text(bot, chat_id, &plain_chunk, reply_to, thread_id).await?;
         }
     }
     Ok(())
