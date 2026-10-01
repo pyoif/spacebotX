@@ -134,12 +134,18 @@ fn is_dangerous_env_var(name: &str) -> bool {
 ///
 /// The check is performed at launch time on each sandbox invocation, so
 /// creating or deleting the file takes effect without restarting spacebot.
-/// `/data` is persistent storage on hosted instances (the root filesystem is
-/// ephemeral), which makes this the natural home for host-provided setup.
+/// The script must live at a path that is actually bind-mounted *into* the
+/// sandbox: only read-only system roots and the persistent tools bin dir are
+/// visible inside bwrap, so `/data/tools/bin` is used (the whole `/data`
+/// tree is not mounted, which is why `/data/spacebot` was unreachable from
+/// inside the sandbox even though the host-side existence check passed).
+/// `/data/tools/bin` is persistent storage on hosted instances (the root
+/// filesystem is ephemeral), which makes this the natural home for
+/// host-provided setup.
 ///
 /// The path is intentionally a fixed constant rather than a config key: it is
 /// an operator escape hatch, not per-agent policy.
-const BWRAP_INIT_SCRIPT: &str = "/data/spacebot/init.sh";
+const BWRAP_INIT_SCRIPT: &str = "/data/tools/bin/init.sh";
 
 /// Linux host paths exposed read-only inside bubblewrap sandboxes.
 /// This is a minimal runtime allowlist: worker/user data directories are not
