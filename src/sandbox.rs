@@ -507,6 +507,14 @@ impl Sandbox {
     ) -> Command {
         let mut cmd = Command::new("bwrap");
 
+        // Namespace options must precede bind/mount options. Entering a new
+        // user namespace is required on hosts where bwrap cannot create a
+        // mount/PID namespace directly (common in containers): without it,
+        // bwrap fails with "Creating new namespace failed: Operation
+        // not permitted". --unshare-user makes bwrap become root in the new
+        // user namespace, which then permits the other namespace flags.
+        cmd.arg("--unshare-user");
+
         // Mount order matters — later mounts override earlier ones.
         // 1. Mount a minimal read-only runtime allowlist.
         for system_path in LINUX_READ_ONLY_SYSTEM_PATHS {
@@ -1013,9 +1021,12 @@ async fn detect_bubblewrap() -> InternalBackend {
         }
     }
 
-    // Preflight: test if --proc /proc works (may fail in nested containers)
+    // Preflight: test if --proc /proc works (may fail in nested containers).
+    // Include --unshare-user to mirror the real invocation — without it the
+    // probe fails for a different reason than the wrapped command would.
     let proc_check = Command::new("bwrap")
         .args([
+            "--unshare-user",
             "--ro-bind",
             "/",
             "/",

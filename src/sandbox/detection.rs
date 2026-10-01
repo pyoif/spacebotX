@@ -84,9 +84,11 @@ async fn check_bubblewrap() -> Result<BubblewrapProbe, Box<dyn std::error::Error
         });
     }
 
-    // Run preflight: try to use --proc flag (may fail in nested containers)
+    // Run preflight: try to use --proc flag (may fail in nested containers).
+    // --unshare-user mirrors the real invocation so the probe reflects it.
     let preflight = Command::new("bwrap")
         .args([
+            "--unshare-user",
             "--ro-bind",
             "/",
             "/",
