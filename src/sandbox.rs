@@ -124,6 +124,23 @@ fn is_dangerous_env_var(name: &str) -> bool {
         .any(|blocked| name.eq_ignore_ascii_case(blocked))
 }
 
+/// Optional init script sourced inside every bubblewrap sandbox before the
+/// payload runs.
+///
+/// If this file exists on the host, the bwrap payload is wrapped as
+/// `/bin/sh -c '. <path>; exec "$@"' sh <original payload...>` so the script's
+/// effects (PATH tweaks, env vars, other setup) apply to the sandboxed command.
+/// If it does not exist, bwrap is launched exactly as before.
+///
+/// The check is performed at launch time on each sandbox invocation, so
+/// creating or deleting the file takes effect without restarting spacebot.
+/// `/data` is persistent storage on hosted instances (the root filesystem is
+/// ephemeral), which makes this the natural home for host-provided setup.
+///
+/// The path is intentionally a fixed constant rather than a config key: it is
+/// an operator escape hatch, not per-agent policy.
+const BWRAP_INIT_SCRIPT: &str = "/data/spacebot/init.sh";
+
 /// Linux host paths exposed read-only inside bubblewrap sandboxes.
 /// This is a minimal runtime allowlist: worker/user data directories are not
 /// mounted unless they are explicitly configured as writable paths.
@@ -651,10 +668,34 @@ impl Sandbox {
             }
         }
 
-        // 17. The actual command
-        cmd.arg("--").arg(program);
-        for arg in args {
-            cmd.arg(arg);
+        // 17. The actual command.
+        //
+        // If an optional host-provided init script exists, source it inside the
+        // sandbox first, then exec the original payload with its arguments
+        // intact. The script runs in the sandbox's own environment (PATH,
+        // HOME, writable mounts), so any exports it makes apply to the payload.
+        // This is checked at launch time, so the file can be added or removed
+        // without restarting spacebot.
+        let init_script = Path::new(BWRAP_INIT_SCRIPT);
+        if init_script.exists() {
+            tracing::debug!(
+                init_script = BWRAP_INIT_SCRIPT,
+                "wrapping bwrap payload with init script"
+            );
+            cmd.arg("--")
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg(format!(". {BWRAP_INIT_SCRIPT}; exec \"$@\""))
+                .arg("sh")
+                .arg(program);
+            for arg in args {
+                cmd.arg(arg);
+            }
+        } else {
+            cmd.arg("--").arg(program);
+            for arg in args {
+                cmd.arg(arg);
+            }
         }
 
         cmd
