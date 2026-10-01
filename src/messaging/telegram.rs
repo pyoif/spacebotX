@@ -454,7 +454,7 @@ impl Messaging for TelegramAdapter {
                 self.send_text(chat_id, &text, None, thread_id).await?;
 
                 if let Some(poll_data) = poll {
-                    send_poll(&self.bot, chat_id, &poll_data).await?;
+                    send_poll(&self.bot, chat_id, &poll_data, thread_id).await?;
                 }
             }
             OutboundResponse::ThreadReply {
@@ -479,19 +479,31 @@ impl Messaging for TelegramAdapter {
             } => {
                 self.stop_typing(&message.conversation_id).await;
 
+                // In a forum group every media send must carry
+                // `message_thread_id` or Telegram routes it to the General
+                // topic. `thread_id` is `None` for General (id 1), so the
+                // parameter is omitted there — same semantics as the text
+                // paths (see `extract_thread_id`).
                 let media_type = telegram_media_type(&mime_type);
                 if matches!(media_type, TelegramMediaType::Audio) {
                     let input_file = InputFile::memory(data.clone()).file_name(filename.clone());
                     let sent = if let Some(ref caption_text) = caption {
                         let html_caption = markdown_to_telegram_html(caption_text);
-                        self.bot
+                        let mut request = self
+                            .bot
                             .send_audio(chat_id, input_file)
                             .caption(&html_caption)
-                            .parse_mode(ParseMode::Html)
-                            .send()
-                            .await
+                            .parse_mode(ParseMode::Html);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     } else {
-                        self.bot.send_audio(chat_id, input_file).send().await
+                        let mut request = self.bot.send_audio(chat_id, input_file);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     };
 
                     if let Err(error) = sent {
@@ -505,6 +517,9 @@ impl Messaging for TelegramAdapter {
                             if let Some(caption_text) = caption {
                                 request = request.caption(caption_text);
                             }
+                            if let Some(topic_id) = thread_id {
+                                request = request.message_thread_id(topic_id);
+                            }
                             request
                                 .send()
                                 .await
@@ -517,14 +532,21 @@ impl Messaging for TelegramAdapter {
                 } else if matches!(media_type, TelegramMediaType::Photo) {
                     let input_file = InputFile::memory(data.clone()).file_name(filename.clone());
                     let sent = if let Some(ref caption_text) = caption {
-                        self.bot
+                        let mut request = self
+                            .bot
                             .send_photo(chat_id, input_file)
                             .caption(markdown_to_telegram_html(caption_text))
-                            .parse_mode(ParseMode::Html)
-                            .send()
-                            .await
+                            .parse_mode(ParseMode::Html);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     } else {
-                        self.bot.send_photo(chat_id, input_file).send().await
+                        let mut request = self.bot.send_photo(chat_id, input_file);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     };
                     if let Err(error) = sent {
                         if should_retry_plain_caption(&error) {
@@ -533,6 +555,9 @@ impl Messaging for TelegramAdapter {
                                 .send_photo(chat_id, InputFile::memory(data).file_name(filename));
                             if let Some(caption_text) = caption {
                                 request = request.caption(caption_text);
+                            }
+                            if let Some(topic_id) = thread_id {
+                                request = request.message_thread_id(topic_id);
                             }
                             request
                                 .send()
@@ -546,14 +571,21 @@ impl Messaging for TelegramAdapter {
                 } else if matches!(media_type, TelegramMediaType::Video) {
                     let input_file = InputFile::memory(data.clone()).file_name(filename.clone());
                     let sent = if let Some(ref caption_text) = caption {
-                        self.bot
+                        let mut request = self
+                            .bot
                             .send_video(chat_id, input_file)
                             .caption(markdown_to_telegram_html(caption_text))
-                            .parse_mode(ParseMode::Html)
-                            .send()
-                            .await
+                            .parse_mode(ParseMode::Html);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     } else {
-                        self.bot.send_video(chat_id, input_file).send().await
+                        let mut request = self.bot.send_video(chat_id, input_file);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     };
                     if let Err(error) = sent {
                         if should_retry_plain_caption(&error) {
@@ -562,6 +594,9 @@ impl Messaging for TelegramAdapter {
                                 .send_video(chat_id, InputFile::memory(data).file_name(filename));
                             if let Some(caption_text) = caption {
                                 request = request.caption(caption_text);
+                            }
+                            if let Some(topic_id) = thread_id {
+                                request = request.message_thread_id(topic_id);
                             }
                             request
                                 .send()
@@ -575,14 +610,21 @@ impl Messaging for TelegramAdapter {
                 } else if matches!(media_type, TelegramMediaType::Voice) {
                     let input_file = InputFile::memory(data.clone()).file_name(filename.clone());
                     let sent = if let Some(ref caption_text) = caption {
-                        self.bot
+                        let mut request = self
+                            .bot
                             .send_voice(chat_id, input_file)
                             .caption(markdown_to_telegram_html(caption_text))
-                            .parse_mode(ParseMode::Html)
-                            .send()
-                            .await
+                            .parse_mode(ParseMode::Html);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     } else {
-                        self.bot.send_voice(chat_id, input_file).send().await
+                        let mut request = self.bot.send_voice(chat_id, input_file);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     };
                     if let Err(error) = sent {
                         if should_retry_plain_caption(&error) {
@@ -591,6 +633,9 @@ impl Messaging for TelegramAdapter {
                                 .send_voice(chat_id, InputFile::memory(data).file_name(filename));
                             if let Some(caption_text) = caption {
                                 request = request.caption(caption_text);
+                            }
+                            if let Some(topic_id) = thread_id {
+                                request = request.message_thread_id(topic_id);
                             }
                             request
                                 .send()
@@ -606,14 +651,21 @@ impl Messaging for TelegramAdapter {
                     let input_file = InputFile::memory(data.clone()).file_name(filename.clone());
                     let sent = if let Some(ref caption_text) = caption {
                         let html_caption = markdown_to_telegram_html(caption_text);
-                        self.bot
+                        let mut request = self
+                            .bot
                             .send_document(chat_id, input_file)
                             .caption(&html_caption)
-                            .parse_mode(ParseMode::Html)
-                            .send()
-                            .await
+                            .parse_mode(ParseMode::Html);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     } else {
-                        self.bot.send_document(chat_id, input_file).send().await
+                        let mut request = self.bot.send_document(chat_id, input_file);
+                        if let Some(topic_id) = thread_id {
+                            request = request.message_thread_id(topic_id);
+                        }
+                        request.send().await
                     };
 
                     if let Err(error) = sent {
@@ -626,6 +678,9 @@ impl Messaging for TelegramAdapter {
                             let mut request = self.bot.send_document(chat_id, fallback_file);
                             if let Some(caption_text) = caption {
                                 request = request.caption(caption_text);
+                            }
+                            if let Some(topic_id) = thread_id {
+                                request = request.message_thread_id(topic_id);
                             }
                             request
                                 .send()
@@ -794,7 +849,7 @@ impl Messaging for TelegramAdapter {
             self.send_text(chat_id, &text, None, None).await?;
 
             if let Some(poll_data) = poll {
-                send_poll(&self.bot, chat_id, &poll_data).await?;
+                send_poll(&self.bot, chat_id, &poll_data, None).await?;
             }
         }
 
@@ -1213,7 +1268,12 @@ fn build_display_name(user: &teloxide::types::User) -> String {
 /// max 100 chars. `open_period` only supports 5–600 seconds so we only set it
 /// when `duration_hours` converts to ≤600s; otherwise the poll stays open
 /// indefinitely (until manually stopped via the Telegram client).
-async fn send_poll(bot: &Bot, chat_id: ChatId, poll: &crate::Poll) -> anyhow::Result<()> {
+async fn send_poll(
+    bot: &Bot,
+    chat_id: ChatId,
+    poll: &crate::Poll,
+    thread_id: Option<ThreadId>,
+) -> anyhow::Result<()> {
     let question = if poll.question.len() > 300 {
         format!(
             "{}…",
@@ -1244,6 +1304,12 @@ async fn send_poll(bot: &Bot, chat_id: ChatId, poll: &crate::Poll) -> anyhow::Re
     let mut request = bot
         .send_poll(chat_id, question, options)
         .is_anonymous(false);
+
+    // Target the originating forum topic when present; `None` for General so
+    // `message_thread_id` is omitted (see `extract_thread_id`).
+    if let Some(topic_id) = thread_id {
+        request = request.message_thread_id(topic_id);
+    }
 
     // Telegram's open_period only supports 5–600 seconds. Apply it when the
     // requested duration fits; otherwise leave unset so the poll stays open
