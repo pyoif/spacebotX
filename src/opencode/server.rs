@@ -9,6 +9,7 @@
 //! reattach to OpenCode servers that are still running from the previous session.
 
 use crate::opencode::types::*;
+use crate::process_registry::{WaitedGuard, spawn_managed};
 
 use anyhow::{Context as _, bail};
 use reqwest::Client;
@@ -34,6 +35,13 @@ pub struct OpenCodeServer {
     port: u16,
     /// None for reattached servers (process was spawned by a previous spacebot run).
     process: Option<Child>,
+    /// Registry guard for a spawned (not reattached) server, held for the
+    /// child's lifetime so the PID-1 zombie reaper never reaps it while we may
+    /// still inspect its status via `try_wait`. Dropped alongside `process`.
+    /// The value is intentionally only written and dropped — its whole purpose
+    /// is the `Drop` side effect — so silence the "never read" lint.
+    #[allow(dead_code)]
+    waited: Option<WaitedGuard>,
     base_url: String,
     client: Client,
     restart_count: u32,
@@ -63,7 +71,8 @@ impl OpenCodeServer {
             "spawning OpenCode server"
         );
 
-        let process = Command::new(opencode_path)
+        let mut process_cmd = Command::new(opencode_path);
+        process_cmd
             .args(["serve", "--port", &port.to_string()])
             .current_dir(&directory)
             .stdin(Stdio::null())
@@ -71,15 +80,14 @@ impl OpenCodeServer {
             .stderr(Stdio::piped())
             .env("OPENCODE_CONFIG_CONTENT", &config_json)
             .env("OPENCODE_PORT", port.to_string())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to spawn OpenCode at '{}' for directory '{}'",
-                    opencode_path,
-                    directory.display()
-                )
-            })?;
+            .kill_on_drop(true);
+        let (process, waited) = spawn_managed(&mut process_cmd).with_context(|| {
+            format!(
+                "failed to spawn OpenCode at '{}' for directory '{}'",
+                opencode_path,
+                directory.display()
+            )
+        })?;
 
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -90,6 +98,7 @@ impl OpenCodeServer {
             directory,
             port,
             process: Some(process),
+            waited: Some(waited),
             base_url,
             client,
             restart_count: 0,
@@ -126,6 +135,7 @@ impl OpenCodeServer {
             directory,
             port,
             process: None, // we didn't spawn it
+            waited: None,  // nothing to reap: we are not its parent
             base_url,
             client,
             restart_count: 0,
@@ -243,10 +253,14 @@ impl OpenCodeServer {
             "restarting OpenCode server"
         );
 
-        // Kill existing process if still running
+        // Kill existing process if still running. Dropping the guard (via the
+        // take below) marks the old PID reapable once it has been collected.
         if let Some(mut child) = self.process.take() {
             let _ = child.kill().await;
+            let _ = child.wait().await;
         }
+        // Old process reaped; release its registry guard.
+        self.waited = None;
 
         // Reuse the same deterministic port
         let port = port_for_directory(&self.directory);
@@ -255,7 +269,8 @@ impl OpenCodeServer {
         let env_config = OpenCodeEnvConfig::new(&self.permissions);
         let config_json = serde_json::to_string(&env_config)?;
 
-        let process = Command::new(&self.opencode_path)
+        let mut process_cmd = Command::new(&self.opencode_path);
+        process_cmd
             .args(["serve", "--port", &port.to_string()])
             .current_dir(&self.directory)
             .stdin(Stdio::null())
@@ -263,18 +278,18 @@ impl OpenCodeServer {
             .stderr(Stdio::piped())
             .env("OPENCODE_CONFIG_CONTENT", &config_json)
             .env("OPENCODE_PORT", port.to_string())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to restart OpenCode server for '{}'",
-                    self.directory.display()
-                )
-            })?;
+            .kill_on_drop(true);
+        let (process, waited) = spawn_managed(&mut process_cmd).with_context(|| {
+            format!(
+                "failed to restart OpenCode server for '{}'",
+                self.directory.display()
+            )
+        })?;
 
         self.port = port;
         self.base_url = base_url;
         self.process = Some(process);
+        self.waited = Some(waited);
 
         self.wait_for_health().await?;
 
@@ -292,6 +307,10 @@ impl OpenCodeServer {
     pub async fn kill(&mut self) {
         if let Some(mut child) = self.process.take() {
             let _ = child.kill().await;
+            // Reap so the child does not linger; then release the registry
+            // guard so the PID is no longer considered "waited".
+            let _ = child.wait().await;
+            self.waited = None;
             tracing::info!(
                 directory = %self.directory.display(),
                 "OpenCode server killed"

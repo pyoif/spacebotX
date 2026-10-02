@@ -1,3 +1,4 @@
+use crate::process_registry::output_managed;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
@@ -66,7 +67,9 @@ struct BubblewrapProbe {
 
 async fn check_bubblewrap() -> Result<BubblewrapProbe, Box<dyn std::error::Error>> {
     // Check if bwrap exists
-    let version_check = match Command::new("bwrap").arg("--version").output().await {
+    let mut version_cmd = Command::new("bwrap");
+    version_cmd.arg("--version");
+    let version_check = match output_managed(&mut version_cmd).await {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(BubblewrapProbe {
@@ -86,20 +89,19 @@ async fn check_bubblewrap() -> Result<BubblewrapProbe, Box<dyn std::error::Error
 
     // Run preflight: try to use --proc flag (may fail in nested containers).
     // --unshare-user mirrors the real invocation so the probe reflects it.
-    let preflight = Command::new("bwrap")
-        .args([
-            "--unshare-user",
-            "--unshare-pid",
-            "--ro-bind",
-            "/",
-            "/",
-            "--proc",
-            "/proc",
-            "--",
-            bubblewrap_true_binary(),
-        ])
-        .output()
-        .await?;
+    let mut preflight_cmd = Command::new("bwrap");
+    preflight_cmd.args([
+        "--unshare-user",
+        "--unshare-pid",
+        "--ro-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--",
+        bubblewrap_true_binary(),
+    ]);
+    let preflight = output_managed(&mut preflight_cmd).await?;
 
     Ok(BubblewrapProbe {
         exists: true,

@@ -409,6 +409,15 @@ impl McpConnection {
                     .map(|(key, value)| (key.clone(), interpolate_env_placeholders(value)))
                     .collect::<HashMap<_, _>>();
 
+                // NOTE (waiter-registry exclusion): rmcp's `TokioChildProcess`
+                // spawns this stdio server child internally — spacebot never
+                // holds the `tokio::process::Child`, so it cannot register the
+                // PID with `crate::process_registry`. That is safe: rmcp's
+                // `ChildWithCleanup::drop` kills *and* waits the child itself
+                // (self-reaping), so it never leaves a zombie; and these
+                // children are long-lived servers, not short-lived commands.
+                // Every other spawn site in this crate routes through
+                // `process_registry::spawn_managed` / `output_managed`.
                 let mut child_command = tokio::process::Command::new(&resolved_command);
                 child_command.env_clear();
                 // Keep PATH so stdio servers launched via shims/shebangs

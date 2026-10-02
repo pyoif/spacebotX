@@ -9,6 +9,7 @@
 //! skip streaming and just collect output.
 
 use crate::agent::process_control::WorkerRegistrationId;
+use crate::process_registry::{output_managed, spawn_managed};
 use crate::sandbox::Sandbox;
 use crate::tools::ToolCallRegistry;
 use crate::{AgentId, ChannelId, ProcessEvent, ProcessId};
@@ -448,7 +449,7 @@ async fn run_batch(
     mut cmd: Command,
     timeout: std::time::Duration,
 ) -> Result<ShellOutput, ShellError> {
-    let output = tokio::time::timeout(timeout, cmd.output())
+    let output = tokio::time::timeout(timeout, output_managed(&mut cmd))
         .await
         .map_err(|_| ShellError {
             message: "Command timed out".to_string(),
@@ -494,10 +495,16 @@ async fn run_streaming(
     worker_registration_id: &Option<WorkerRegistrationId>,
     call_id: String,
 ) -> Result<ShellOutput, ShellError> {
-    let mut child = cmd.spawn().map_err(|e| ShellError {
+    let (child, waited_guard) = spawn_managed(&mut cmd).map_err(|e| ShellError {
         message: format!("Failed to spawn command: {e}"),
         exit_code: -1,
     })?;
+    // Hold the registry guard for the whole child lifetime: it is released only
+    // when `waited_guard` drops, i.e. after this function returns and the child
+    // has been reaped (or the task is cancelled, in which case the child is
+    // abandoned and the guard drop marks it reapable).
+    let _waited_guard = waited_guard;
+    let mut child = child;
 
     let stdout_pipe = child.stdout.take().ok_or_else(|| ShellError {
         message: "Failed to capture stdout".to_string(),
@@ -713,7 +720,7 @@ pub async fn shell(
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = tokio::time::timeout(tokio::time::Duration::from_secs(60), cmd.output())
+    let output = tokio::time::timeout(tokio::time::Duration::from_secs(60), output_managed(&mut cmd))
         .await
         .map_err(|_| crate::error::AgentError::Other(anyhow::anyhow!("Command timed out")))?
         .map_err(|e| {

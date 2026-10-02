@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::Command;
 
+use crate::process_registry::output_managed;
+
 /// Port sshd listens on. Uses 2222 to avoid conflicts with other services
 /// that may occupy port 22 in containerized environments.
 const SSHD_PORT: u16 = 2222;
@@ -171,19 +173,19 @@ pub async fn enable(state: &ApiState) -> Result<(), String> {
     // Clean up any stale PID file from a previous crash.
     let _ = tokio::fs::remove_file(PID_FILE).await;
 
-    let output = Command::new("/usr/sbin/sshd")
-        .args([
-            "-e",
-            "-o",
-            "PermitRootLogin=prohibit-password",
-            "-o",
-            "PasswordAuthentication=no",
-            "-o",
-            &format!("PidFile={PID_FILE}"),
-            "-p",
-            &SSHD_PORT.to_string(),
-        ])
-        .output()
+    let mut cmd = Command::new("/usr/sbin/sshd");
+    cmd.args([
+        "-e",
+        "-o",
+        "PermitRootLogin=prohibit-password",
+        "-o",
+        "PasswordAuthentication=no",
+        "-o",
+        &format!("PidFile={PID_FILE}"),
+        "-p",
+        &SSHD_PORT.to_string(),
+    ]);
+    let output = output_managed(&mut cmd)
         .await
         .map_err(|e| format!("failed to start sshd: {e}"))?;
 
@@ -220,9 +222,9 @@ pub async fn disable() -> Result<(), String> {
         return Ok(());
     }
 
-    let output = Command::new("kill")
-        .arg(&pid)
-        .output()
+    let mut cmd = Command::new("kill");
+    cmd.arg(&pid);
+    let output = output_managed(&mut cmd)
         .await
         .map_err(|e| format!("failed to kill sshd (pid {pid}): {e}"))?;
 
@@ -270,9 +272,9 @@ async fn is_sshd_running() -> bool {
 /// Verify a PID belongs to an sshd process.
 async fn is_pid_sshd(pid: &str) -> bool {
     // First check the process is alive.
-    let alive = Command::new("kill")
-        .args(["-0", pid])
-        .output()
+    let mut cmd = Command::new("kill");
+    cmd.args(["-0", pid]);
+    let alive = output_managed(&mut cmd)
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -297,18 +299,17 @@ async fn generate_host_keys(ssh_dir: &Path) -> Result<(), std::io::Error> {
             continue;
         }
 
-        let output = Command::new("ssh-keygen")
-            .args([
-                "-t",
-                key_type,
-                "-f",
-                &key_path.to_string_lossy(),
-                "-N",
-                "", // no passphrase
-                "-q",
-            ])
-            .output()
-            .await?;
+        let mut cmd = Command::new("ssh-keygen");
+        cmd.args([
+            "-t",
+            key_type,
+            "-f",
+            &key_path.to_string_lossy(),
+            "-N",
+            "", // no passphrase
+            "-q",
+        ]);
+        let output = output_managed(&mut cmd).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use tokio::process::Command;
 
+use crate::process_registry::output_managed;
+
 /// Information about a discovered git repository.
 #[derive(Debug, Clone)]
 pub struct DiscoveredRepo {
@@ -118,17 +120,14 @@ pub async fn discover_repos(project_root: &Path) -> anyhow::Result<Vec<Discovere
 /// Parses `git worktree list --porcelain` output. Returns worktrees other than
 /// the main working tree.
 pub async fn list_worktrees(repo_path: &Path) -> anyhow::Result<Vec<DiscoveredWorktree>> {
-    let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .with_context(|| {
-            format!(
-                "failed to run `git worktree list` in {}",
-                repo_path.display()
-            )
-        })?;
+    let mut cmd = Command::new("git");
+    cmd.args(["worktree", "list", "--porcelain"]).current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.with_context(|| {
+        format!(
+            "failed to run `git worktree list` in {}",
+            repo_path.display()
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -198,17 +197,15 @@ pub async fn create_worktree(
 
     // Try creating with a new branch first.
     let start = start_point.unwrap_or("HEAD");
-    let output = Command::new("git")
-        .args(["worktree", "add", worktree_str, "-b", branch, start])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .with_context(|| {
-            format!(
-                "failed to run `git worktree add` in {}",
-                repo_path.display()
-            )
-        })?;
+    let mut cmd = Command::new("git");
+    cmd.args(["worktree", "add", worktree_str, "-b", branch, start])
+        .current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.with_context(|| {
+        format!(
+            "failed to run `git worktree add` in {}",
+            repo_path.display()
+        )
+    })?;
 
     if output.status.success() {
         return Ok(());
@@ -217,17 +214,15 @@ pub async fn create_worktree(
     // If the branch already exists, try without -b.
     let stderr = String::from_utf8_lossy(&output.stderr);
     if stderr.contains("already exists") {
-        let output = Command::new("git")
-            .args(["worktree", "add", worktree_str, branch])
-            .current_dir(repo_path)
-            .output()
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to run `git worktree add` in {}",
-                    repo_path.display()
-                )
-            })?;
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "add", worktree_str, branch])
+            .current_dir(repo_path);
+        let output = output_managed(&mut cmd).await.with_context(|| {
+            format!(
+                "failed to run `git worktree add` in {}",
+                repo_path.display()
+            )
+        })?;
 
         if output.status.success() {
             return Ok(());
@@ -256,17 +251,15 @@ pub async fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> anyhow::
         .to_str()
         .context("worktree path is not valid UTF-8")?;
 
-    let output = Command::new("git")
-        .args(["worktree", "remove", worktree_str])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .with_context(|| {
-            format!(
-                "failed to run `git worktree remove` in {}",
-                repo_path.display()
-            )
-        })?;
+    let mut cmd = Command::new("git");
+    cmd.args(["worktree", "remove", worktree_str])
+        .current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.with_context(|| {
+        format!(
+            "failed to run `git worktree remove` in {}",
+            repo_path.display()
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -309,12 +302,9 @@ fn scrub_remote_url(url: &str) -> String {
 
 /// Get the origin remote URL for a repo. Credentials are scrubbed from HTTPS URLs.
 async fn get_remote_url(repo_path: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["remote", "get-url", "origin"]).current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.ok()?;
 
     if !output.status.success() {
         return None;
@@ -332,12 +322,10 @@ async fn get_remote_url(repo_path: &Path) -> Option<String> {
 ///
 /// Returns `None` for detached HEAD or when git is unavailable.
 pub async fn get_current_branch(repo_path: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.ok()?;
 
     if !output.status.success() {
         return None;
@@ -354,12 +342,10 @@ pub async fn get_current_branch(repo_path: &Path) -> Option<String> {
 /// Get the default branch for a repo (from origin/HEAD or fallback to "main").
 async fn get_default_branch(repo_path: &Path) -> Option<String> {
     // Try symbolic-ref of origin/HEAD first.
-    let output = Command::new("git")
-        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.ok()?;
 
     if output.status.success() {
         let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -370,12 +356,10 @@ async fn get_default_branch(repo_path: &Path) -> Option<String> {
     }
 
     // Fallback: check if HEAD points to a branch.
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_path);
+    let output = output_managed(&mut cmd).await.ok()?;
 
     if output.status.success() {
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();

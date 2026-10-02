@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::Command;
 
+use crate::process_registry::output_managed;
+
 pub mod detection;
 
 pub use detection::{SandboxBackend, detect_backend};
@@ -1068,7 +1070,9 @@ fn bubblewrap_true_binary() -> &'static str {
 /// Linux: check if bwrap is available and whether --proc /proc works.
 async fn detect_bubblewrap() -> InternalBackend {
     // Check if bwrap exists
-    let version_check = Command::new("bwrap").arg("--version").output().await;
+    let mut version_cmd = Command::new("bwrap");
+    version_cmd.arg("--version");
+    let version_check = output_managed(&mut version_cmd).await;
 
     match version_check {
         Ok(output) if output.status.success() => {}
@@ -1085,20 +1089,19 @@ async fn detect_bubblewrap() -> InternalBackend {
     // Preflight: test if --proc /proc works (may fail in nested containers).
     // Include --unshare-user to mirror the real invocation — without it the
     // probe fails for a different reason than the wrapped command would.
-    let proc_check = Command::new("bwrap")
-        .args([
-            "--unshare-user",
-            "--unshare-pid",
-            "--ro-bind",
-            "/",
-            "/",
-            "--proc",
-            "/proc",
-            "--",
-            bubblewrap_true_binary(),
-        ])
-        .output()
-        .await;
+    let mut proc_cmd = Command::new("bwrap");
+    proc_cmd.args([
+        "--unshare-user",
+        "--unshare-pid",
+        "--ro-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--",
+        bubblewrap_true_binary(),
+    ]);
+    let proc_check = output_managed(&mut proc_cmd).await;
 
     let proc_supported = proc_check.is_ok_and(|output| output.status.success());
 
