@@ -1,7 +1,11 @@
-//! Update checking and Docker self-update.
+//! Update checking.
 //!
-//! Checks GitHub releases for new versions and optionally performs
-//! in-place container updates when the Docker socket is available.
+//! Checks GitHub releases for new versions and surfaces an
+//! [`UpdateStatus`]. It deliberately does **not** perform in-place container
+//! updates: this fork removed the Docker self-update path (and its former
+//! Docker-API client dependency). Container images are rebuilt and redeployed
+//! out of band; the API/CLI surface reports `can_apply: false` with an
+//! explanatory reason so clients degrade cleanly.
 
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
@@ -98,11 +102,9 @@ pub fn new_shared_status() -> SharedUpdateStatus {
     let mut status = UpdateStatus::default();
     match status.deployment {
         Deployment::Docker => {
-            status.can_apply = docker_socket_available();
-            if !status.can_apply {
-                status.cannot_apply_reason =
-                    Some("Mount /var/run/docker.sock to enable one-click updates.".to_string());
-            }
+            status.can_apply = false;
+            status.cannot_apply_reason =
+                Some(SELF_UPDATE_DISABLED_REASON.to_string());
         }
         Deployment::Native => {
             status.cannot_apply_reason =
@@ -115,6 +117,15 @@ pub fn new_shared_status() -> SharedUpdateStatus {
         }
     }
     Arc::new(ArcSwap::from_pointee(status))
+}
+
+/// Reason reported when running in Docker: this fork has no in-place updater.
+const SELF_UPDATE_DISABLED_REASON: &str =
+    "In-place Docker self-update is not available in this build; rebuild and redeploy the image.";
+
+/// Public accessor for the self-update-disabled reason (used by the API layer).
+pub fn self_update_unavailable_reason() -> &'static str {
+    SELF_UPDATE_DISABLED_REASON
 }
 
 /// Minimal GitHub release response.
@@ -130,7 +141,7 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
     let result = fetch_latest_release().await;
 
     let current = status.load();
-    let capability = detect_apply_capability(current.deployment).await;
+    let capability = detect_apply_capability(current.deployment);
     let mut next = UpdateStatus {
         current_version: CURRENT_VERSION.to_string(),
         deployment: current.deployment,
@@ -217,11 +228,11 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     latest > current
 }
 
-/// Check if the Docker socket is accessible.
-fn docker_socket_available() -> bool {
-    std::path::Path::new("/var/run/docker.sock").exists()
-}
-
+/// Whether the host can apply updates in-place.
+///
+/// This build has no in-place updater (the Docker path was removed), so this
+/// is always `false` and carries the reason. The `UpdateStatus` shape is kept
+/// so API/CLI consumers continue to work unchanged.
 #[derive(Debug, Clone)]
 struct ApplyCapability {
     can_apply: bool,
@@ -229,348 +240,19 @@ struct ApplyCapability {
     docker_image: Option<String>,
 }
 
-async fn detect_apply_capability(deployment: Deployment) -> ApplyCapability {
-    match deployment {
-        Deployment::Native => ApplyCapability {
-            can_apply: false,
-            cannot_apply_reason: Some(
-                "Native/source installs update manually (rebuild + restart).".to_string(),
-            ),
-            docker_image: None,
-        },
-        Deployment::Hosted => ApplyCapability {
-            can_apply: false,
-            cannot_apply_reason: Some(
-                "Hosted instances are updated by platform rollout, not self-service.".to_string(),
-            ),
-            docker_image: None,
-        },
-        Deployment::Docker => {
-            if !docker_socket_available() {
-                return ApplyCapability {
-                    can_apply: false,
-                    cannot_apply_reason: Some(
-                        "Mount /var/run/docker.sock to enable one-click updates.".to_string(),
-                    ),
-                    docker_image: None,
-                };
-            }
-
-            let docker = match bollard::Docker::connect_with_local_defaults() {
-                Ok(client) => client,
-                Err(error) => {
-                    return ApplyCapability {
-                        can_apply: false,
-                        cannot_apply_reason: Some(format!(
-                            "Docker socket is present but cannot be opened: {error}"
-                        )),
-                        docker_image: None,
-                    };
-                }
-            };
-
-            if let Err(error) = docker.ping().await {
-                return ApplyCapability {
-                    can_apply: false,
-                    cannot_apply_reason: Some(format!(
-                        "Docker socket is mounted but engine is not reachable: {error}"
-                    )),
-                    docker_image: None,
-                };
-            }
-
-            let docker_image = detect_current_docker_image(&docker).await.ok();
-
-            ApplyCapability {
-                can_apply: true,
-                cannot_apply_reason: None,
-                docker_image,
-            }
+fn detect_apply_capability(deployment: Deployment) -> ApplyCapability {
+    let reason = match deployment {
+        Deployment::Docker => SELF_UPDATE_DISABLED_REASON,
+        Deployment::Hosted => {
+            "Hosted instances are updated by platform rollout, not self-service."
         }
-    }
-}
-
-async fn detect_current_docker_image(docker: &bollard::Docker) -> anyhow::Result<String> {
-    let container_id = get_own_container_id()?;
-    let container_info = docker
-        .inspect_container(&container_id, None)
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to inspect container: {error}"))?;
-
-    let image = container_info
-        .config
-        .as_ref()
-        .and_then(|config| config.image.as_deref())
-        .ok_or_else(|| anyhow::anyhow!("could not determine current image"))?;
-
-    Ok(image.to_string())
-}
-
-/// Apply a Docker self-update: pull the new image, recreate this container.
-///
-/// This function does not return on success — the current container is stopped
-/// and replaced. On failure it returns an error and the container keeps running.
-pub async fn apply_docker_update(status: &SharedUpdateStatus) -> anyhow::Result<()> {
-    let current = status.load();
-
-    if !current.update_available {
-        anyhow::bail!("no update available");
-    }
-    if current.deployment != Deployment::Docker {
-        anyhow::bail!("not running in Docker");
-    }
-    let capability = detect_apply_capability(current.deployment).await;
-    if !capability.can_apply {
-        anyhow::bail!(
-            "{}",
-            capability
-                .cannot_apply_reason
-                .unwrap_or_else(|| "Docker socket not available".to_string())
-        );
-    }
-
-    let latest_version = current
-        .latest_version
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("no latest version"))?;
-
-    tracing::info!(
-        from = CURRENT_VERSION,
-        to = latest_version,
-        "applying Docker update"
-    );
-
-    let docker = bollard::Docker::connect_with_local_defaults()
-        .map_err(|e| anyhow::anyhow!("failed to connect to Docker: {}", e))?;
-
-    // Determine which image tag this container is running
-    let container_id = get_own_container_id()?;
-    let container_info = docker
-        .inspect_container(&container_id, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to inspect container: {}", e))?;
-
-    let current_image = container_info
-        .config
-        .as_ref()
-        .and_then(|c| c.image.as_deref())
-        .ok_or_else(|| anyhow::anyhow!("could not determine current image"))?
-        .to_string();
-
-    // Resolve the target image: same base name, new version tag.
-    // e.g. ghcr.io/spacedriveapp/spacebot:v0.1.0 -> ghcr.io/spacedriveapp/spacebot:v0.2.0
-    let target_image = resolve_target_image(&current_image, latest_version);
-
-    tracing::info!(
-        current_image = %current_image,
-        target_image = %target_image,
-        "pulling new image"
-    );
-
-    // Pull the new image
-    use bollard::image::CreateImageOptions;
-    use futures::StreamExt as _;
-
-    let pull_options = Some(CreateImageOptions {
-        from_image: target_image.as_str(),
-        ..Default::default()
-    });
-
-    let mut pull_stream = docker.create_image(pull_options, None, None);
-    while let Some(result) = pull_stream.next().await {
-        match result {
-            Ok(info) => {
-                if let Some(status) = &info.status {
-                    tracing::debug!(status = %status, "pull progress");
-                }
-            }
-            Err(error) => {
-                let error_text = error.to_string();
-                if error_text.contains("manifest unknown")
-                    || error_text.contains("not found")
-                    || error_text.contains("pull access denied")
-                {
-                    anyhow::bail!(
-                        "image pull failed for {target_image}. this image does not have Spacebot release tags; rebuild and redeploy manually"
-                    );
-                }
-                anyhow::bail!("image pull failed: {}", error);
-            }
-        }
-    }
-
-    tracing::info!("image pulled, recreating container");
-
-    // Recreate: create new container with same config but new image, then swap
-    let container_name = container_info
-        .name
-        .as_deref()
-        .map(|n| n.strip_prefix('/').unwrap_or(n))
-        .ok_or_else(|| anyhow::anyhow!("container has no name"))?
-        .to_string();
-
-    let mut config = container_info
-        .config
-        .ok_or_else(|| anyhow::anyhow!("no container config"))?;
-
-    config.image = Some(target_image.clone());
-
-    // Preserve hostname if set
-    if config.hostname.as_deref() == Some(&container_id) {
-        config.hostname = None;
-    }
-
-    let host_config = container_info.host_config;
-    let networking_config = container_info.network_settings.and_then(|ns| {
-        let networks = ns.networks?;
-        Some(bollard::container::NetworkingConfig {
-            endpoints_config: networks,
-        })
-    });
-
-    // Use a temporary name so we can swap atomically
-    let temp_name = format!("{}-update", container_name);
-
-    let create_options = bollard::container::CreateContainerOptions {
-        name: temp_name.as_str(),
-        ..Default::default()
+        Deployment::Native => "Native/source installs update manually (rebuild + restart).",
     };
-
-    let create_config = bollard::container::Config {
-        image: config.image,
-        env: config.env,
-        cmd: config.cmd,
-        entrypoint: config.entrypoint,
-        working_dir: config.working_dir,
-        exposed_ports: config.exposed_ports,
-        volumes: config.volumes,
-        labels: config.labels,
-        host_config,
-        networking_config,
-        ..Default::default()
-    };
-
-    let new_container = docker
-        .create_container(Some(create_options), create_config)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to create new container: {}", e))?;
-
-    tracing::info!(new_id = %new_container.id, "new container created");
-
-    // Stop the current container (this process will be killed)
-    // The rename + start happens from a brief window where we stop ourselves.
-    // To handle this, we rename the old container first, then start the new one,
-    // then stop ourselves. The new container takes over.
-
-    // Rename current container out of the way
-    let old_name = format!("{}-old", container_name);
-    docker
-        .rename_container(
-            &container_id,
-            bollard::container::RenameContainerOptions { name: &old_name },
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to rename old container: {}", e))?;
-
-    // Rename new container to the original name
-    docker
-        .rename_container(
-            &new_container.id,
-            bollard::container::RenameContainerOptions {
-                name: &container_name,
-            },
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to rename new container: {}", e))?;
-
-    // Start the new container
-    docker
-        .start_container::<String>(&new_container.id, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to start new container: {}", e))?;
-
-    tracing::info!("new container started, stopping old container");
-
-    // Stop the old container (ourselves). This process will terminate.
-    docker
-        .stop_container(
-            &container_id,
-            Some(bollard::container::StopContainerOptions { t: 10 }),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to stop old container: {}", e))?;
-
-    // Remove the old container after stop
-    docker
-        .remove_container(
-            &container_id,
-            Some(bollard::container::RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
-        )
-        .await
-        .ok(); // Best effort — we're shutting down
-
-    // We shouldn't reach here since stop_container kills us,
-    // but just in case:
-    std::process::exit(0);
-}
-
-/// Read this container's ID from /proc/self/cgroup or the hostname.
-fn get_own_container_id() -> anyhow::Result<String> {
-    // In Docker, the hostname is typically the short container ID
-    if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
-        let hostname = hostname.trim();
-        if hostname.len() >= 12 && hostname.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(hostname.to_string());
-        }
+    ApplyCapability {
+        can_apply: false,
+        cannot_apply_reason: Some(reason.to_string()),
+        docker_image: None,
     }
-
-    // Fall back to /proc/self/mountinfo parsing
-    if let Ok(content) = std::fs::read_to_string("/proc/self/mountinfo") {
-        for line in content.lines() {
-            // Look for docker container ID pattern in mount paths
-            if let Some(pos) = line.find("/docker/containers/") {
-                let after = &line[pos + 19..];
-                if let Some(end) = after.find('/') {
-                    let id = &after[..end];
-                    if id.len() >= 12 {
-                        return Ok(id.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    anyhow::bail!("could not determine own container ID")
-}
-
-/// Given a current image reference and a new version, produce the target image tag.
-///
-/// Examples:
-///   - `ghcr.io/spacedriveapp/spacebot:v0.1.0` + `0.2.0` -> `ghcr.io/spacedriveapp/spacebot:v0.2.0`
-///   - `ghcr.io/spacedriveapp/spacebot:latest` + `0.2.0` -> `ghcr.io/spacedriveapp/spacebot:v0.2.0`
-///   - `ghcr.io/spacedriveapp/spacebot:v0.1.0-full` + `0.2.0` -> `ghcr.io/spacedriveapp/spacebot:v0.2.0`
-///
-/// Legacy `-slim`/`-full` suffixes are stripped during migration to the unified image.
-fn resolve_target_image(current_image: &str, new_version: &str) -> String {
-    let image_without_digest = current_image
-        .split_once('@')
-        .map(|(name, _)| name)
-        .unwrap_or(current_image);
-
-    let last_slash = image_without_digest.rfind('/');
-    let last_colon = image_without_digest.rfind(':');
-
-    let base = match last_colon {
-        Some(colon) if last_slash.is_none_or(|slash| colon > slash) => {
-            &image_without_digest[..colon]
-        }
-        _ => image_without_digest,
-    };
-
-    format!("{base}:v{new_version}")
 }
 
 #[cfg(test)]
@@ -586,36 +268,12 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_target_image() {
-        // Versioned tag
-        assert_eq!(
-            resolve_target_image("ghcr.io/spacedriveapp/spacebot:v0.1.0", "0.2.0"),
-            "ghcr.io/spacedriveapp/spacebot:v0.2.0"
-        );
-        // Latest tag
-        assert_eq!(
-            resolve_target_image("ghcr.io/spacedriveapp/spacebot:latest", "0.2.0"),
-            "ghcr.io/spacedriveapp/spacebot:v0.2.0"
-        );
-        // Legacy slim tag (strips variant)
-        assert_eq!(
-            resolve_target_image("ghcr.io/spacedriveapp/spacebot:v0.1.0-slim", "0.2.0"),
-            "ghcr.io/spacedriveapp/spacebot:v0.2.0"
-        );
-        // Legacy full tag (strips variant)
-        assert_eq!(
-            resolve_target_image("ghcr.io/spacedriveapp/spacebot:v0.1.0-full", "0.2.0"),
-            "ghcr.io/spacedriveapp/spacebot:v0.2.0"
-        );
-        // Custom registry with port in host
-        assert_eq!(
-            resolve_target_image("registry.local:5000/spacebot", "0.2.0"),
-            "registry.local:5000/spacebot:v0.2.0"
-        );
-        // Digest reference
-        assert_eq!(
-            resolve_target_image("ghcr.io/spacedriveapp/spacebot@sha256:abcdef", "0.2.0"),
-            "ghcr.io/spacedriveapp/spacebot:v0.2.0"
-        );
+    fn apply_capability_is_disabled_everywhere() {
+        for deployment in [Deployment::Docker, Deployment::Hosted, Deployment::Native] {
+            let cap = detect_apply_capability(deployment);
+            assert!(!cap.can_apply, "{deployment:?} must not be self-updatable");
+            assert!(cap.cannot_apply_reason.is_some());
+        }
     }
 }
+

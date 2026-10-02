@@ -15,7 +15,7 @@ pub enum UpdateCommand {
         #[arg(long)]
         now: bool,
     },
-    /// Pull the new image and recreate the container
+    /// Request an in-place update (unavailable in this build; use rebuild+redeploy)
     Apply,
     /// Print the changelog
     Changelog,

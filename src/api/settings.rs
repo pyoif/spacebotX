@@ -531,7 +531,10 @@ pub(super) async fn update_check_now(
     Json((**status).clone())
 }
 
-/// Pull the new Docker image and recreate this container.
+/// Attempt an in-place update.
+///
+/// This build has no in-place updater (the Docker apply path was removed), so
+/// this always reports that the update must be applied out of band.
 #[utoipa::path(
     post,
     path = "/update-apply",
@@ -544,16 +547,17 @@ pub(super) async fn update_check_now(
 pub(super) async fn update_apply(
     State(state): State<Arc<ApiState>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match crate::update::apply_docker_update(&state.update_status).await {
-        Ok(()) => Ok(Json(serde_json::json!({ "status": "updating" }))),
-        Err(error) => {
-            tracing::error!(%error, "update apply failed");
-            Ok(Json(serde_json::json!({
-                "status": "error",
-                "error": error.to_string(),
-            })))
-        }
+    let status = state.update_status.load();
+    if !status.update_available {
+        return Ok(Json(serde_json::json!({
+            "status": "error",
+            "error": "no update available",
+        })));
     }
+    Ok(Json(serde_json::json!({
+        "status": "error",
+        "error": crate::update::self_update_unavailable_reason(),
+    })))
 }
 
 #[utoipa::path(
