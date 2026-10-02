@@ -245,6 +245,25 @@ fn spawn_quiesce_watchdog(
                         if let Err(err) = child_guard.kill().await {
                             tracing::warn!(%err, "failed to kill child process during quiesce detection");
                         }
+                        // Reap the killed child. `kill()` terminates the process
+                        // but does not reap it; this watchdog runs in its own task,
+                        // and the main shell flow may never reach its own `wait()`
+                        // (e.g. it is aborted or its short wait times out). Without
+                        // this the sandboxed bwrap child lingers as a zombie.
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            child_guard.wait(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(err)) => {
+                                tracing::warn!(%err, "failed to reap child process during quiesce detection");
+                            }
+                            Err(_) => {
+                                tracing::warn!("timed out reaping child process during quiesce detection");
+                            }
+                        }
                     }
                     Err(_) => {
                         tracing::warn!("timed out acquiring child lock for quiesce kill");

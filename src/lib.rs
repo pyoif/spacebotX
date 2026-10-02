@@ -40,6 +40,7 @@ pub mod tools;
 pub mod update;
 pub mod wakes;
 pub mod wiki;
+pub mod zombie_reaper;
 
 pub use error::{Error, Result};
 

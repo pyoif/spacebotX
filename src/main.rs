@@ -829,6 +829,14 @@ async fn run(
     tracing::info!("starting spacebot");
     tracing::info!(instance_dir = %config.instance_dir.display(), "configuration loaded");
 
+    // As PID 1 (e.g. `spacebot start --foreground` inside a container) the
+    // daemon is the reaper of last resort for every orphaned process in the
+    // container. Without this, any child that is killed or exited without being
+    // reaped lingers as a zombie and permanently holds a process-table slot
+    // until the container is recreated. Individual spawn sites reap their own
+    // children; this is defense in depth for the PID-1 case.
+    spacebot::zombie_reaper::spawn();
+
     // SIGTERM stream for orchestrated stops (docker stop, systemctl stop).
     // Installed before agent initialization: that window includes database
     // migrations and model warmup, and a SIGTERM under the default disposition
