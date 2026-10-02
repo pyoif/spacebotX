@@ -15,8 +15,7 @@ use std::sync::Arc;
 // Shared context
 
 /// Shared context cloned into each file tool. Holds workspace root and sandbox
-/// for path validation, mirroring how `BrowserContext` is shared across browser
-/// tools.
+/// for path validation, mirroring how shared state is passed across tools.
 #[derive(Debug, Clone)]
 pub(crate) struct FileContext {
     workspace: PathBuf,

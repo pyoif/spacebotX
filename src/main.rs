@@ -2059,26 +2059,6 @@ async fn run(
 
     messaging_manager.shutdown().await;
 
-    // Close shared browsers inline — their Drop-spawned cleanup task would
-    // race the process exit (or never run before an exec) and orphan Chromium
-    // on every restart. Shutdowns run concurrently, each bounded so a stuck
-    // browser (or a tool call still holding the lock) can't stall teardown
-    // past the restart confirmation window.
-    futures::future::join_all(agents.iter().filter_map(|(agent_id, agent)| {
-        let shared_browser = agent.deps.runtime_config.shared_browser.clone()?;
-        let agent_id = agent_id.clone();
-        Some(async move {
-            let teardown = async { shared_browser.lock().await.shutdown().await };
-            if tokio::time::timeout(std::time::Duration::from_secs(10), teardown)
-                .await
-                .is_err()
-            {
-                tracing::warn!(%agent_id, "shared browser teardown timed out after 10s");
-            }
-        })
-    }))
-    .await;
-
     for (agent_id, agent) in agents {
         tracing::info!(%agent_id, "shutting down agent");
         agent.deps.mcp_manager.disconnect_all().await;

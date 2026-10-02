@@ -10,7 +10,6 @@ use super::{
     WorkReadiness, evaluate_work_readiness,
 };
 use crate::llm::routing::RoutingConfig;
-use crate::tools::browser::SharedBrowserHandle;
 
 /// Live configuration that can be hot-reloaded without restarting.
 ///
@@ -86,12 +85,6 @@ pub struct RuntimeConfig {
     pub working_memory: ArcSwap<crate::config::types::WorkingMemoryConfig>,
     /// Participant context configuration for prompt-time participant awareness.
     pub participant_context: ArcSwap<crate::config::types::ParticipantContextConfig>,
-    /// Shared browser state for persistent sessions.
-    ///
-    /// When `browser.persist_session = true`, all workers share this handle so
-    /// the browser process and tabs survive across worker lifetimes. When
-    /// `persist_session = false` this is `None` and each worker creates its own.
-    pub shared_browser: Option<SharedBrowserHandle>,
 }
 
 impl RuntimeConfig {
@@ -157,11 +150,6 @@ impl RuntimeConfig {
                 crate::config::types::WorkingMemoryConfig::default(),
             ),
             participant_context: ArcSwap::from_pointee(defaults.participant_context),
-            shared_browser: if agent_config.browser.persist_session {
-                Some(crate::tools::browser::new_shared_browser_handle())
-            } else {
-                None
-            },
         }
     }
 

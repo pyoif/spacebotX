@@ -34,8 +34,6 @@ pub mod ask;
 pub mod attachment_recall;
 pub mod autonomy_complete;
 pub mod branch_tool;
-pub mod browser;
-pub mod browser_detection;
 pub mod cancel;
 pub mod channel_recall;
 pub mod chronicle;
@@ -105,10 +103,6 @@ pub use autonomy_complete::{
     AutonomyCompleteTool,
 };
 pub use branch_tool::{BranchArgs, BranchError, BranchOutput, BranchTool};
-pub use browser::{
-    BrowserError, BrowserOutput, SharedBrowserHandle, TabInfo, new_shared_browser_handle,
-    register_browser_tools,
-};
 pub use cancel::{CancelArgs, CancelError, CancelOutput, CancelTool};
 pub use channel_recall::{
     ChannelRecallArgs, ChannelRecallError, ChannelRecallOutput, ChannelRecallTool,
@@ -776,83 +770,6 @@ pub async fn add_direct_mode_tools(
         .add_tool(FileListTool::new(workspace, sandbox))
         .await?;
 
-    // Browser tools
-    let browser_config = rc.browser_config.load();
-    if browser_config.enabled {
-        let screenshot_dir = state.screenshot_dir.clone();
-        let context = browser::BrowserContext::new(
-            if let Some(shared) = rc
-                .shared_browser
-                .as_ref()
-                .filter(|_| browser_config.persist_session)
-            {
-                shared.clone()
-            } else {
-                browser::new_shared_browser_handle()
-            },
-            BrowserConfig::clone(&browser_config),
-            screenshot_dir,
-            rc.secrets.load().as_ref().as_ref().cloned(),
-        );
-        handle
-            .add_tool(browser::BrowserLaunchTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserNavigateTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserSnapshotTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserClickTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserTypeTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserPressKeyTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserScreenshotTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserEvaluateTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserTabOpenTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserTabListTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserTabCloseTool {
-                context: context.clone(),
-            })
-            .await?;
-        handle
-            .add_tool(browser::BrowserCloseTool { context })
-            .await?;
-    }
 
     // Web search
     if let Some(key) = rc.brave_search_key.load().as_ref().clone() {
@@ -1014,91 +931,6 @@ pub async fn add_autonomy_tools(
         handle
             .add_tool(FileEditTool::new(workspace, sandbox))
             .await?;
-
-        let browser_config = state.deps.runtime_config.browser_config.load();
-        if browser_config.enabled {
-            let context = browser::BrowserContext::new(
-                if let Some(shared) = state
-                    .deps
-                    .runtime_config
-                    .shared_browser
-                    .as_ref()
-                    .filter(|_| browser_config.persist_session)
-                {
-                    shared.clone()
-                } else {
-                    browser::new_shared_browser_handle()
-                },
-                BrowserConfig::clone(&browser_config),
-                state.screenshot_dir.clone(),
-                state
-                    .deps
-                    .runtime_config
-                    .secrets
-                    .load()
-                    .as_ref()
-                    .as_ref()
-                    .cloned(),
-            );
-            handle
-                .add_tool(browser::BrowserLaunchTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserNavigateTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserSnapshotTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserClickTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserTypeTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserPressKeyTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserScreenshotTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserEvaluateTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserTabOpenTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserTabListTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserTabCloseTool {
-                    context: context.clone(),
-                })
-                .await?;
-            handle
-                .add_tool(browser::BrowserCloseTool { context })
-                .await?;
-        }
     }
 
     Ok(())
@@ -1194,20 +1026,6 @@ pub async fn remove_direct_mode_tools(
     remove_optional_tool(handle, FileWriteTool::NAME).await;
     remove_optional_tool(handle, FileEditTool::NAME).await;
     remove_optional_tool(handle, FileListTool::NAME).await;
-
-    // Browser tools, registered only when browser automation is enabled
-    remove_optional_tool(handle, browser::BrowserLaunchTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserNavigateTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserSnapshotTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserClickTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserTypeTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserPressKeyTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserScreenshotTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserEvaluateTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserTabOpenTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserTabListTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserTabCloseTool::NAME).await;
-    remove_optional_tool(handle, browser::BrowserCloseTool::NAME).await;
 
     // Web search + skill reader
     remove_optional_tool(handle, WebSearchTool::NAME).await;
@@ -1447,8 +1265,7 @@ pub fn create_branch_tool_server(
 /// Create a per-worker ToolServer with task-appropriate tools.
 ///
 /// Each worker gets its own isolated ToolServer. The `set_status` tool is bound to
-/// the specific worker's ID so status updates route correctly. The browser tool
-/// is included when browser automation is enabled in the agent config.
+/// the specific worker's ID so status updates route correctly.
 ///
 /// Shell commands are sandboxed via the `Sandbox` backend.
 /// File operations are restricted to `workspace` via path validation.
@@ -1462,8 +1279,8 @@ pub fn create_worker_tool_server(
     event_tx: broadcast::Sender<ProcessEvent>,
     tool_output_tx: broadcast::Sender<ProcessEvent>,
     tool_call_registry: ToolCallRegistry,
-    browser_config: BrowserConfig,
-    screenshot_dir: PathBuf,
+    _browser_config: BrowserConfig,
+    _screenshot_dir: PathBuf,
     brave_search_key: Option<String>,
     workspace: PathBuf,
     sandbox: Arc<Sandbox>,
@@ -1473,7 +1290,7 @@ pub fn create_worker_tool_server(
     memory_search: Arc<MemorySearch>,
     wiki_write: bool,
     wiki_store: Option<Arc<crate::wiki::WikiStore>>,
-    blocked_signal: Option<crate::agent::worker::BlockSignal>,
+    _blocked_signal: Option<crate::agent::worker::BlockSignal>,
     lifecycle: Option<crate::lifecycle::LifecycleHandle>,
     process_run_logger: crate::conversation::ProcessRunLogger,
     interactive: bool,
@@ -1524,16 +1341,6 @@ pub fn create_worker_tool_server(
         server = server.tool(SecretSetTool::new(store.clone(), agent_id.clone()));
     }
 
-    if browser_config.enabled {
-        server = register_browser_tools(
-            server,
-            browser_config,
-            screenshot_dir,
-            &runtime_config,
-            blocked_signal,
-            Some(agent_id.clone()),
-        );
-    }
 
     if let Some(key) = brave_search_key {
         server = server.tool(WebSearchTool::new(key));
@@ -1613,7 +1420,7 @@ pub fn create_cortex_chat_tool_server(
     conversation_logger: crate::conversation::history::ConversationLogger,
     channel_store: crate::conversation::ChannelStore,
     run_logger: crate::conversation::history::ProcessRunLogger,
-    browser_config: BrowserConfig,
+    _browser_config: BrowserConfig,
     screenshot_dir: PathBuf,
     brave_search_key: Option<String>,
     workspace: PathBuf,
@@ -1680,16 +1487,6 @@ pub fn create_cortex_chat_tool_server(
 
     server = register_file_tools(server, workspace, sandbox);
 
-    if browser_config.enabled {
-        server = register_browser_tools(
-            server,
-            browser_config,
-            screenshot_dir,
-            &runtime_config,
-            None,
-            Some(agent_id.clone()),
-        );
-    }
 
     if let Some(key) = brave_search_key {
         server = server.tool(WebSearchTool::new(key));

@@ -1631,12 +1631,11 @@ impl Worker {
 ///
 /// This runs in-place on the history before every LLM call, so the model
 /// always has the latest snapshot but doesn't waste context on stale ones.
-const DEDUP_TOOL_RESULTS: &[&str] = &["browser_snapshot", "browser_tab_list"];
+const DEDUP_TOOL_RESULTS: &[&str] = &[];
 
 /// Replace all but the most recent result for each tool in `DEDUP_TOOL_RESULTS`
-/// with a short placeholder. This dramatically reduces context usage for
-/// browser-heavy workflows where `browser_snapshot` returns large ARIA trees
-/// on every call.
+/// with a short placeholder. This reduces context usage for tools whose results
+/// are large and superseded on every call.
 ///
 /// Note: this mutates `history` in-place, so superseded results are also
 /// replaced in the persisted transcript.
