@@ -529,6 +529,12 @@ impl Sandbox {
         command_env: &HashMap<String, String>,
     ) -> Command {
         let mut cmd = Command::new("bwrap");
+        // Ensure a dropped Child is killed and reaped by tokio instead of
+        // lingering as a zombie. Without this, a shell command that is
+        // abandoned (timeout, worker cancellation) leaves the bwrap process
+        // defunct, permanently consuming a process-table slot until the daemon
+        // exits — which eventually exhausts the container's PID limit.
+        cmd.kill_on_drop(true);
 
         // Namespace options must precede bind/mount options. Entering a new
         // user namespace is required on hosts where bwrap cannot create a
@@ -726,6 +732,8 @@ impl Sandbox {
         let profile = self.generate_sbpl_profile(config);
 
         let mut cmd = Command::new("/usr/bin/sandbox-exec");
+        // Reap the child if the handle is dropped without an explicit wait.
+        cmd.kill_on_drop(true);
         cmd.arg("-p").arg(profile);
         cmd.arg(program);
         for arg in args {
@@ -795,6 +803,8 @@ impl Sandbox {
         command_env: &HashMap<String, String>,
     ) -> Command {
         let mut cmd = Command::new(program);
+        // Reap the child if the handle is dropped without an explicit wait.
+        cmd.kill_on_drop(true);
         for arg in args {
             cmd.arg(arg);
         }

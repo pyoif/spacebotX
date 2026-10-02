@@ -561,6 +561,11 @@ async fn run_streaming(
                     if let Err(err) = child_guard.kill().await {
                         tracing::warn!(%err, "failed to kill child process during timeout handling");
                     }
+                    // Reap the killed child. `kill()` terminates the process but
+                    // does not reap it, so without this the sandboxed bwrap child
+                    // lingers as a zombie (holding a process-table slot) since the
+                    // early return below skips the normal `wait()` path.
+                    let _ = child_guard.wait().await;
                 }
                 Err(_) => {
                     tracing::warn!("timed out acquiring child lock for timeout kill");
