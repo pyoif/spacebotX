@@ -33,7 +33,6 @@ pub struct MessagingStatusResponse {
     pub telegram: PlatformStatus,
     pub email: PlatformStatus,
     pub webhook: PlatformStatus,
-    pub twitch: PlatformStatus,
     pub mattermost: PlatformStatus,
     pub signal: PlatformStatus,
     pub instances: Vec<AdapterInstanceStatus>,
@@ -64,16 +63,6 @@ pub(super) struct InstanceCredentials {
     slack_app_token: Option<String>,
     #[serde(default)]
     telegram_token: Option<String>,
-    #[serde(default)]
-    twitch_username: Option<String>,
-    #[serde(default)]
-    twitch_oauth_token: Option<String>,
-    #[serde(default)]
-    twitch_client_id: Option<String>,
-    #[serde(default)]
-    twitch_client_secret: Option<String>,
-    #[serde(default)]
-    twitch_refresh_token: Option<String>,
     // Email credentials
     #[serde(default)]
     email_imap_host: Option<String>,
@@ -363,7 +352,7 @@ pub(super) async fn messaging_status(
 ) -> Result<Json<MessagingStatusResponse>, StatusCode> {
     let config_path = state.config_path.read().await.clone();
 
-    let (discord, slack, telegram, email, webhook, twitch, mattermost, signal, instances) =
+    let (discord, slack, telegram, email, webhook, mattermost, signal, instances) =
         if config_path.exists() {
             let content = tokio::fs::read_to_string(&config_path)
                 .await
@@ -650,79 +639,6 @@ pub(super) async fn messaging_status(
                     enabled: false,
                 });
 
-            let twitch_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("twitch"))
-                .map(|t| {
-                    let has_username = t
-                        .get("username")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_token = t
-                        .get("oauth_token")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let enabled = t.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                    if has_username && has_token {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "twitch",
-                            None,
-                            true,
-                            enabled,
-                        );
-                    }
-
-                    if let Some(named_instances) = t
-                        .get("instances")
-                        .and_then(|value| value.as_array_of_tables())
-                    {
-                        for instance in named_instances {
-                            let instance_name = normalize_adapter_selector(
-                                instance.get("name").and_then(|value| value.as_str()),
-                            );
-                            let instance_enabled = instance
-                                .get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true)
-                                && enabled;
-                            let has_instance_username = instance
-                                .get("username")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-                            let has_instance_token = instance
-                                .get("oauth_token")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-
-                            if let Some(instance_name) = instance_name
-                                && has_instance_username
-                                && has_instance_token
-                            {
-                                push_instance_status(
-                                    &mut instances,
-                                    bindings,
-                                    "twitch",
-                                    Some(instance_name),
-                                    true,
-                                    instance_enabled,
-                                );
-                            }
-                        }
-                    }
-
-                    PlatformStatus {
-                        configured: has_username && has_token,
-                        enabled: has_username && has_token && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
             // Populate instances for Mattermost (not in the legacy per-platform status fields)
             let mattermost_status = doc
                 .get("messaging")
@@ -876,7 +792,6 @@ pub(super) async fn messaging_status(
                 telegram_status,
                 email_status,
                 webhook_status,
-                twitch_status,
                 mattermost_status,
                 signal_status,
                 instances,
@@ -894,7 +809,6 @@ pub(super) async fn messaging_status(
                 default.clone(),
                 default.clone(),
                 default.clone(),
-                default.clone(),
                 Vec::new(),
             )
         };
@@ -905,7 +819,6 @@ pub(super) async fn messaging_status(
         telegram,
         email,
         webhook,
-        twitch,
         mattermost,
         signal,
         instances,
@@ -1052,41 +965,6 @@ pub(super) async fn disconnect_platform(
             // Disconnect all adapters for this platform
             if let Err(error) = manager.remove_platform_adapters(platform).await {
                 tracing::warn!(%error, platform = %platform, "failed to shut down adapters during disconnect");
-            }
-        }
-    }
-
-    if platform == "twitch" {
-        let instance_dir = state.instance_dir.load();
-        if let Some(name) = adapter_name {
-            let token_path = instance_dir.join(crate::config::named_twitch_token_file_name(name));
-            match tokio::fs::remove_file(&token_path).await {
-                Ok(()) => {
-                    tracing::info!(path = %token_path.display(), "twitch token file deleted");
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %token_path.display(),
-                        "failed to delete twitch token file"
-                    );
-                }
-            }
-        } else {
-            let token_path = instance_dir.join("twitch_token.json");
-            match tokio::fs::remove_file(&token_path).await {
-                Ok(()) => {
-                    tracing::info!(path = %token_path.display(), "twitch token file deleted");
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %token_path.display(),
-                        "failed to delete twitch token file"
-                    );
-                }
             }
         }
     }
@@ -1393,73 +1271,6 @@ pub(super) async fn toggle_platform(
                         }
                     }
                 }
-                "twitch" => {
-                    if let Some(twitch_config) = &new_config.messaging.twitch {
-                        if !twitch_config.username.is_empty()
-                            && !twitch_config.oauth_token.is_empty()
-                        {
-                            let perms = crate::config::TwitchPermissions::from_config(
-                                twitch_config,
-                                &new_config.bindings,
-                            );
-                            let arc_swap =
-                                std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(perms));
-                            let instance_dir = state.instance_dir.load();
-                            let token_path = instance_dir.join("twitch_token.json");
-                            let adapter = crate::messaging::twitch::TwitchAdapter::new(
-                                "twitch",
-                                &twitch_config.username,
-                                &twitch_config.oauth_token,
-                                twitch_config.client_id.clone(),
-                                twitch_config.client_secret.clone(),
-                                twitch_config.refresh_token.clone(),
-                                Some(token_path),
-                                twitch_config.channels.clone(),
-                                twitch_config.trigger_prefix.clone(),
-                                arc_swap,
-                            );
-                            if let Err(error) = manager.register_and_start(adapter).await {
-                                tracing::error!(%error, "failed to start twitch adapter on toggle");
-                            }
-                        }
-
-                        for instance in twitch_config
-                            .instances
-                            .iter()
-                            .filter(|instance| instance.enabled)
-                        {
-                            let runtime_key = crate::config::binding_runtime_adapter_key(
-                                "twitch",
-                                Some(instance.name.as_str()),
-                            );
-                            let token_file_name =
-                                crate::config::named_twitch_token_file_name(&instance.name);
-                            let instance_dir = state.instance_dir.load();
-                            let token_path = instance_dir.join(token_file_name);
-                            let perms = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
-                                crate::config::TwitchPermissions::from_instance_config(
-                                    instance,
-                                    &new_config.bindings,
-                                ),
-                            ));
-                            let adapter = crate::messaging::twitch::TwitchAdapter::new(
-                                runtime_key,
-                                &instance.username,
-                                &instance.oauth_token,
-                                instance.client_id.clone(),
-                                instance.client_secret.clone(),
-                                instance.refresh_token.clone(),
-                                Some(token_path),
-                                instance.channels.clone(),
-                                instance.trigger_prefix.clone(),
-                                perms,
-                            );
-                            if let Err(error) = manager.register_and_start(adapter).await {
-                                tracing::error!(%error, adapter = %instance.name, "failed to start named twitch adapter on toggle");
-                            }
-                        }
-                    }
-                }
                 "signal" => {
                     if let Some(signal_config) = &new_config.messaging.signal {
                         match request.adapter.as_ref() {
@@ -1615,7 +1426,7 @@ pub(super) async fn create_messaging_instance(
 
     if !matches!(
         platform.as_str(),
-        "discord" | "slack" | "telegram" | "twitch" | "email" | "webhook" | "mattermost" | "signal"
+        "discord" | "slack" | "telegram" | "email" | "webhook" | "mattermost" | "signal"
     ) {
         return Ok(Json(MessagingInstanceActionResponse {
             success: false,
@@ -1716,23 +1527,6 @@ pub(super) async fn create_messaging_instance(
                 "telegram" => {
                     if let Some(token) = &credentials.telegram_token {
                         platform_table["token"] = toml_edit::value(token.as_str());
-                    }
-                }
-                "twitch" => {
-                    if let Some(username) = &credentials.twitch_username {
-                        platform_table["username"] = toml_edit::value(username.as_str());
-                    }
-                    if let Some(token) = &credentials.twitch_oauth_token {
-                        platform_table["oauth_token"] = toml_edit::value(token.as_str());
-                    }
-                    if let Some(client_id) = &credentials.twitch_client_id {
-                        platform_table["client_id"] = toml_edit::value(client_id.as_str());
-                    }
-                    if let Some(client_secret) = &credentials.twitch_client_secret {
-                        platform_table["client_secret"] = toml_edit::value(client_secret.as_str());
-                    }
-                    if let Some(refresh) = &credentials.twitch_refresh_token {
-                        platform_table["refresh_token"] = toml_edit::value(refresh.as_str());
                     }
                 }
                 "email" => {
@@ -1881,23 +1675,6 @@ pub(super) async fn create_messaging_instance(
                 "telegram" => {
                     if let Some(token) = &credentials.telegram_token {
                         instance_table["token"] = toml_edit::value(token.as_str());
-                    }
-                }
-                "twitch" => {
-                    if let Some(username) = &credentials.twitch_username {
-                        instance_table["username"] = toml_edit::value(username.as_str());
-                    }
-                    if let Some(token) = &credentials.twitch_oauth_token {
-                        instance_table["oauth_token"] = toml_edit::value(token.as_str());
-                    }
-                    if let Some(client_id) = &credentials.twitch_client_id {
-                        instance_table["client_id"] = toml_edit::value(client_id.as_str());
-                    }
-                    if let Some(client_secret) = &credentials.twitch_client_secret {
-                        instance_table["client_secret"] = toml_edit::value(client_secret.as_str());
-                    }
-                    if let Some(refresh) = &credentials.twitch_refresh_token {
-                        instance_table["refresh_token"] = toml_edit::value(refresh.as_str());
                     }
                 }
                 "email" => {
@@ -2068,7 +1845,7 @@ pub(super) async fn delete_messaging_instance(
 
     if !matches!(
         platform.as_str(),
-        "discord" | "slack" | "telegram" | "twitch" | "email" | "webhook" | "mattermost" | "signal"
+        "discord" | "slack" | "telegram" | "email" | "webhook" | "mattermost" | "signal"
     ) {
         return Ok(Json(MessagingInstanceActionResponse {
             success: false,
@@ -2141,13 +1918,6 @@ pub(super) async fn delete_messaging_instance(
                 }
                 "telegram" => {
                     table.remove("token");
-                }
-                "twitch" => {
-                    table.remove("username");
-                    table.remove("oauth_token");
-                    table.remove("client_id");
-                    table.remove("client_secret");
-                    table.remove("refresh_token");
                 }
                 "email" => {
                     table.remove("imap_host");
@@ -2253,28 +2023,6 @@ pub(super) async fn delete_messaging_instance(
         }
     }
 
-    // Clean up twitch token file if applicable
-    if platform == "twitch" {
-        let instance_dir = state.instance_dir.load();
-        let token_path = if let Some(name) = adapter_name {
-            instance_dir.join(crate::config::named_twitch_token_file_name(name))
-        } else {
-            instance_dir.join("twitch_token.json")
-        };
-        match tokio::fs::remove_file(&token_path).await {
-            Ok(()) => {
-                tracing::info!(path = %token_path.display(), "twitch token file deleted");
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    path = %token_path.display(),
-                    "failed to delete twitch token file"
-                );
-            }
-        }
-    }
 
     tracing::info!(platform = %platform, adapter = %runtime_key, "messaging instance deleted via API");
 

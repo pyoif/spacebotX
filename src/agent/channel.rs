@@ -4902,11 +4902,6 @@ fn compute_listen_mode_invocation(message: &InboundMessage, raw_text: &str) -> (
             .get("slack_mentions_or_replies_to_bot")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "twitch" => message
-            .metadata
-            .get("twitch_mentions_or_replies_to_bot")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
         _ => false,
     };
     let invoked_by_reply = match message.source.as_str() {
@@ -4995,7 +4990,7 @@ fn should_send_quiet_mode_fallback(
         && !state.replied_flag
         && matches!(
             message.source.as_str(),
-            "discord" | "telegram" | "slack" | "twitch" | "signal"
+            "discord" | "telegram" | "slack" | "signal"
         )
 }
 

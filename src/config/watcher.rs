@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::{
     Binding, Config, DiscordPermissions, MattermostPermissions, RuntimeConfig, SignalPermissions,
-    SlackPermissions, TelegramPermissions, TwitchPermissions, binding_runtime_adapter_key,
+    SlackPermissions, TelegramPermissions, binding_runtime_adapter_key,
 };
 use sha2::{Digest, Sha256};
 
@@ -42,7 +42,6 @@ pub fn spawn_file_watcher(
     discord_permissions: Option<Arc<arc_swap::ArcSwap<DiscordPermissions>>>,
     slack_permissions: Option<Arc<arc_swap::ArcSwap<SlackPermissions>>>,
     telegram_permissions: Option<Arc<arc_swap::ArcSwap<TelegramPermissions>>>,
-    twitch_permissions: Option<Arc<arc_swap::ArcSwap<TwitchPermissions>>>,
     mattermost_permissions: Option<Arc<arc_swap::ArcSwap<MattermostPermissions>>>,
     signal_permissions: Option<Arc<arc_swap::ArcSwap<SignalPermissions>>>,
     bindings: Arc<arc_swap::ArcSwap<Vec<Binding>>>,
@@ -264,14 +263,6 @@ pub fn spawn_file_watcher(
                     tracing::info!("telegram permissions reloaded");
                 }
 
-                if let Some(ref perms) = twitch_permissions
-                    && let Some(twitch_config) = &config.messaging.twitch
-                {
-                    let new_perms = TwitchPermissions::from_config(twitch_config, &config.bindings);
-                    perms.store(Arc::new(new_perms));
-                    tracing::info!("twitch permissions reloaded");
-                }
-
                 if let Some(ref perms) = mattermost_permissions
                     && let Some(mattermost_config) = &config.messaging.mattermost
                 {
@@ -298,7 +289,6 @@ pub fn spawn_file_watcher(
                     let discord_permissions = discord_permissions.clone();
                     let slack_permissions = slack_permissions.clone();
                     let telegram_permissions = telegram_permissions.clone();
-                    let twitch_permissions = twitch_permissions.clone();
                     let mattermost_permissions = mattermost_permissions.clone();
                     let signal_permissions = signal_permissions.clone();
                     let instance_dir = instance_dir.clone();
@@ -310,7 +300,6 @@ pub fn spawn_file_watcher(
                             discord_permissions,
                             slack_permissions,
                             telegram_permissions,
-                            twitch_permissions,
                             mattermost_permissions,
                             signal_permissions,
                         ) {
@@ -370,7 +359,6 @@ fn build_desired_configured_adapters(
     discord_permissions: Option<Arc<arc_swap::ArcSwap<DiscordPermissions>>>,
     slack_permissions: Option<Arc<arc_swap::ArcSwap<SlackPermissions>>>,
     telegram_permissions: Option<Arc<arc_swap::ArcSwap<TelegramPermissions>>>,
-    twitch_permissions: Option<Arc<arc_swap::ArcSwap<TwitchPermissions>>>,
     mattermost_permissions: Option<Arc<arc_swap::ArcSwap<MattermostPermissions>>>,
     signal_permissions: Option<Arc<arc_swap::ArcSwap<SignalPermissions>>>,
 ) -> anyhow::Result<Vec<crate::messaging::ConfiguredAdapter>> {
@@ -636,94 +624,6 @@ fn build_desired_configured_adapters(
         ));
     }
 
-    if let Some(twitch_config) = &config.messaging.twitch
-        && twitch_config.enabled
-    {
-        if !twitch_config.username.is_empty() && !twitch_config.oauth_token.is_empty() {
-            let permissions_snapshot =
-                TwitchPermissions::from_config(twitch_config, &config.bindings);
-            let permissions = twitch_permissions.unwrap_or_else(|| {
-                Arc::new(arc_swap::ArcSwap::from_pointee(
-                    permissions_snapshot.clone(),
-                ))
-            });
-            let fingerprint = format!(
-                "username={};oauth_token={};client_id={:?};client_secret={:?};refresh_token={:?};channels={:?};trigger_prefix={:?};permissions={}",
-                secret_fingerprint(&twitch_config.username),
-                secret_fingerprint(&twitch_config.oauth_token),
-                twitch_config.client_id.as_deref().map(secret_fingerprint),
-                twitch_config
-                    .client_secret
-                    .as_deref()
-                    .map(secret_fingerprint),
-                twitch_config
-                    .refresh_token
-                    .as_deref()
-                    .map(secret_fingerprint),
-                sorted_strings(twitch_config.channels.clone()),
-                twitch_config.trigger_prefix,
-                twitch_permissions_fingerprint(&permissions_snapshot)
-            );
-            let adapter = crate::messaging::twitch::TwitchAdapter::new(
-                "twitch",
-                &twitch_config.username,
-                &twitch_config.oauth_token,
-                twitch_config.client_id.clone(),
-                twitch_config.client_secret.clone(),
-                twitch_config.refresh_token.clone(),
-                Some(instance_dir.join("twitch_token.json")),
-                twitch_config.channels.clone(),
-                twitch_config.trigger_prefix.clone(),
-                permissions,
-            );
-            desired.push(crate::messaging::ConfiguredAdapter::new(
-                adapter,
-                fingerprint,
-            ));
-        }
-
-        for instance in twitch_config
-            .instances
-            .iter()
-            .filter(|instance| instance.enabled)
-        {
-            if instance.username.is_empty() || instance.oauth_token.is_empty() {
-                continue;
-            }
-            let permissions_snapshot =
-                TwitchPermissions::from_instance_config(instance, &config.bindings);
-            let fingerprint = format!(
-                "username={};oauth_token={};client_id={:?};client_secret={:?};refresh_token={:?};channels={:?};trigger_prefix={:?};permissions={}",
-                secret_fingerprint(&instance.username),
-                secret_fingerprint(&instance.oauth_token),
-                instance.client_id.as_deref().map(secret_fingerprint),
-                instance.client_secret.as_deref().map(secret_fingerprint),
-                instance.refresh_token.as_deref().map(secret_fingerprint),
-                sorted_strings(instance.channels.clone()),
-                instance.trigger_prefix,
-                twitch_permissions_fingerprint(&permissions_snapshot)
-            );
-            let token_path =
-                instance_dir.join(crate::config::named_twitch_token_file_name(&instance.name));
-            let adapter = crate::messaging::twitch::TwitchAdapter::new(
-                binding_runtime_adapter_key("twitch", Some(instance.name.as_str())),
-                &instance.username,
-                &instance.oauth_token,
-                instance.client_id.clone(),
-                instance.client_secret.clone(),
-                instance.refresh_token.clone(),
-                Some(token_path),
-                instance.channels.clone(),
-                instance.trigger_prefix.clone(),
-                Arc::new(arc_swap::ArcSwap::from_pointee(permissions_snapshot)),
-            );
-            desired.push(crate::messaging::ConfiguredAdapter::new(
-                adapter,
-                fingerprint,
-            ));
-        }
-    }
-
     if let Some(mattermost_config) = &config.messaging.mattermost
         && mattermost_config.enabled
     {
@@ -931,14 +831,6 @@ fn telegram_permissions_fingerprint(permissions: &TelegramPermissions) -> String
         "chat_filter={:?};dm_allowed_users={:?}",
         permissions.chat_filter.clone().map(sorted_i64s),
         sorted_i64s(permissions.dm_allowed_users.clone())
-    )
-}
-
-fn twitch_permissions_fingerprint(permissions: &TwitchPermissions) -> String {
-    format!(
-        "channel_filter={:?};allowed_users={:?}",
-        permissions.channel_filter.clone().map(sorted_strings),
-        sorted_strings(permissions.allowed_users.clone())
     )
 }
 

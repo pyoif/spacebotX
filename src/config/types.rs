@@ -6,7 +6,6 @@ use crate::secrets::store::{InstancePattern, SecretField, SystemSecrets};
 
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -2105,14 +2104,10 @@ impl Binding {
                 .and_then(|v| v.as_u64())
                 .map(|v| v.to_string());
 
-            // Also check Slack and Twitch channel IDs
+            // Also check Slack, Mattermost and other channel IDs
             let slack_channel = message
                 .metadata
                 .get("slack_channel_id")
-                .and_then(|v| v.as_str());
-            let twitch_channel = message
-                .metadata
-                .get("twitch_channel")
                 .and_then(|v| v.as_str());
 
             // Also check Mattermost channel ID
@@ -2125,7 +2120,6 @@ impl Binding {
                 .as_ref()
                 .is_some_and(|id| self.channel_ids.contains(id))
                 || slack_channel.is_some_and(|id| self.channel_ids.contains(&id.to_string()))
-                || twitch_channel.is_some_and(|id| self.channel_ids.contains(&id.to_string()))
                 || mattermost_channel.is_some_and(|id| self.channel_ids.contains(&id.to_string()));
             let parent_match = parent_channel
                 .as_ref()
@@ -2200,7 +2194,6 @@ impl Binding {
         let mention_key = match message.source.as_str() {
             "discord" => "discord_mentions_or_replies_to_bot",
             "slack" => "slack_mentions_or_replies_to_bot",
-            "twitch" => "twitch_mentions_or_replies_to_bot",
             "telegram" => "telegram_mentions_or_replies_to_bot",
             "mattermost" => "mattermost_mentions_or_replies_to_bot",
             // Unknown platforms: if require_mention is set, default to
@@ -2226,19 +2219,6 @@ pub fn binding_runtime_adapter_key(platform: &str, adapter: Option<&str>) -> Str
     platform.to_string()
 }
 
-/// Build the persisted token filename for a named Twitch adapter instance.
-pub fn named_twitch_token_file_name(name: &str) -> String {
-    let safe_name: String = name
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .take(64)
-        .collect();
-    let hash = Sha256::digest(name.as_bytes());
-    let hash_prefix = hex::encode(&hash[..8]);
-
-    format!("twitch_token_{safe_name}_{hash_prefix}.json")
-}
-
 /// Match a binding's adapter selector against an inbound message adapter.
 pub(super) fn binding_adapter_matches(binding: &Binding, message: &crate::InboundMessage) -> bool {
     match (&binding.adapter, message.adapter_selector()) {
@@ -2257,7 +2237,7 @@ pub(super) struct AdapterValidationState {
 pub(super) fn is_named_adapter_platform(platform: &str) -> bool {
     matches!(
         platform,
-        "discord" | "slack" | "telegram" | "twitch" | "email" | "signal" | "mattermost"
+        "discord" | "slack" | "telegram" | "email" | "signal" | "mattermost"
     )
 }
 
@@ -2441,33 +2421,6 @@ pub(super) fn build_adapter_validation_states(
         validate_runtime_keys("telegram", default_present, &named_instances)?;
         states.insert(
             "telegram",
-            AdapterValidationState {
-                default_present,
-                named_instances,
-            },
-        );
-    }
-
-    if let Some(twitch) = &messaging.twitch {
-        validate_instance_names(
-            "twitch",
-            twitch
-                .instances
-                .iter()
-                .map(|instance| instance.name.as_str()),
-        )?;
-        let named_instances: std::collections::HashSet<String> = twitch
-            .instances
-            .iter()
-            .filter(|i| i.enabled)
-            .map(|i| i.name.clone())
-            .collect();
-        let default_present = twitch.enabled
-            && !twitch.username.trim().is_empty()
-            && !twitch.oauth_token.trim().is_empty();
-        validate_runtime_keys("twitch", default_present, &named_instances)?;
-        states.insert(
-            "twitch",
             AdapterValidationState {
                 default_present,
                 named_instances,
@@ -2769,7 +2722,6 @@ pub struct MessagingConfig {
     pub telegram: Option<TelegramConfig>,
     pub email: Option<EmailConfig>,
     pub webhook: Option<WebhookConfig>,
-    pub twitch: Option<TwitchConfig>,
     pub signal: Option<SignalConfig>,
     pub mattermost: Option<MattermostConfig>,
 }
@@ -3143,125 +3095,6 @@ impl SystemSecrets for EmailConfig {
                 instance_pattern: Some(InstancePattern {
                     platform_prefix: "EMAIL",
                     field_suffix: "SMTP_PASSWORD",
-                }),
-            },
-        ]
-    }
-}
-
-#[derive(Clone)]
-pub struct TwitchConfig {
-    pub enabled: bool,
-    pub username: String,
-    pub oauth_token: String,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    pub refresh_token: Option<String>,
-    /// Additional named Twitch bot instances for this platform.
-    pub instances: Vec<TwitchInstanceConfig>,
-    /// Channels to join (without the # prefix).
-    pub channels: Vec<String>,
-    /// Default authority list for slash commands on this adapter; binding-level lists take precedence.
-    pub authority: Vec<String>,
-    /// Optional prefix that triggers the bot (e.g. "!ask"). If empty, all messages are processed.
-    pub trigger_prefix: Option<String>,
-}
-
-#[derive(Clone)]
-pub struct TwitchInstanceConfig {
-    pub name: String,
-    pub enabled: bool,
-    pub username: String,
-    pub oauth_token: String,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    pub refresh_token: Option<String>,
-    /// Channels to join (without the # prefix).
-    pub channels: Vec<String>,
-    /// Default authority list for slash commands on this adapter; binding-level lists take precedence.
-    pub authority: Vec<String>,
-    /// Optional prefix that triggers the bot for this instance.
-    pub trigger_prefix: Option<String>,
-}
-
-impl std::fmt::Debug for TwitchInstanceConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TwitchInstanceConfig")
-            .field("name", &self.name)
-            .field("enabled", &self.enabled)
-            .field("username", &self.username)
-            .field("oauth_token", &"[REDACTED]")
-            .field("client_id", &self.client_id)
-            .field(
-                "client_secret",
-                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("channels", &self.channels)
-            .field("authority", &self.authority)
-            .field("trigger_prefix", &self.trigger_prefix)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for TwitchConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TwitchConfig")
-            .field("enabled", &self.enabled)
-            .field("username", &self.username)
-            .field("oauth_token", &"[REDACTED]")
-            .field("instances", &self.instances)
-            .field("channels", &self.channels)
-            .field("authority", &self.authority)
-            .field("trigger_prefix", &self.trigger_prefix)
-            .finish()
-    }
-}
-
-impl SystemSecrets for TwitchConfig {
-    fn section() -> &'static str {
-        "twitch"
-    }
-
-    fn is_messaging_adapter() -> bool {
-        true
-    }
-
-    fn secret_fields() -> &'static [SecretField] {
-        &[
-            SecretField {
-                toml_key: "oauth_token",
-                secret_name: "TWITCH_OAUTH_TOKEN",
-                instance_pattern: Some(InstancePattern {
-                    platform_prefix: "TWITCH",
-                    field_suffix: "OAUTH_TOKEN",
-                }),
-            },
-            SecretField {
-                toml_key: "client_id",
-                secret_name: "TWITCH_CLIENT_ID",
-                instance_pattern: Some(InstancePattern {
-                    platform_prefix: "TWITCH",
-                    field_suffix: "CLIENT_ID",
-                }),
-            },
-            SecretField {
-                toml_key: "client_secret",
-                secret_name: "TWITCH_CLIENT_SECRET",
-                instance_pattern: Some(InstancePattern {
-                    platform_prefix: "TWITCH",
-                    field_suffix: "CLIENT_SECRET",
-                }),
-            },
-            SecretField {
-                toml_key: "refresh_token",
-                secret_name: "TWITCH_REFRESH_TOKEN",
-                instance_pattern: Some(InstancePattern {
-                    platform_prefix: "TWITCH",
-                    field_suffix: "REFRESH_TOKEN",
                 }),
             },
         ]

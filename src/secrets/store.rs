@@ -1413,7 +1413,7 @@ pub trait SystemSecrets {
 pub fn system_secret_registry() -> Vec<&'static SecretField> {
     use crate::config::{
         DefaultsConfig, DiscordConfig, EmailConfig, LlmConfig, MattermostConfig, SignalConfig,
-        SlackConfig, TelegramConfig, TwitchConfig,
+        SlackConfig, TelegramConfig,
     };
 
     let mut fields = Vec::new();
@@ -1425,7 +1425,6 @@ pub fn system_secret_registry() -> Vec<&'static SecretField> {
     fields.extend(DiscordConfig::secret_fields());
     fields.extend(SlackConfig::secret_fields());
     fields.extend(TelegramConfig::secret_fields());
-    fields.extend(TwitchConfig::secret_fields());
     fields.extend(EmailConfig::secret_fields());
     fields.extend(SignalConfig::secret_fields());
     fields.extend(MattermostConfig::secret_fields());
@@ -1762,14 +1761,6 @@ mod tests {
             SecretCategory::System
         );
         assert_eq!(
-            auto_categorize("TWITCH_OAUTH_TOKEN"),
-            SecretCategory::System
-        );
-        assert_eq!(
-            auto_categorize("TWITCH_CLIENT_SECRET"),
-            SecretCategory::System
-        );
-        assert_eq!(
             auto_categorize("EMAIL_IMAP_PASSWORD"),
             SecretCategory::System
         );
@@ -1793,14 +1784,6 @@ mod tests {
         );
         assert_eq!(
             auto_categorize("TELEGRAM_NOTIFICATIONS_BOT_TOKEN"),
-            SecretCategory::System
-        );
-        assert_eq!(
-            auto_categorize("TWITCH_GAMING_OAUTH_TOKEN"),
-            SecretCategory::System
-        );
-        assert_eq!(
-            auto_categorize("TWITCH_GAMING_CLIENT_SECRET"),
             SecretCategory::System
         );
         assert_eq!(
@@ -2087,10 +2070,6 @@ mod tests {
         assert!(
             has_secret("TELEGRAM_BOT_TOKEN"),
             "missing TELEGRAM_BOT_TOKEN"
-        );
-        assert!(
-            has_secret("TWITCH_OAUTH_TOKEN"),
-            "missing TWITCH_OAUTH_TOKEN"
         );
         assert!(
             has_secret("EMAIL_IMAP_PASSWORD"),

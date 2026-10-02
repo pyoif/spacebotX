@@ -7,7 +7,6 @@
 use super::state::ApiState;
 use crate::config::{
     DefaultsConfig, DiscordConfig, EmailConfig, LlmConfig, SlackConfig, TelegramConfig,
-    TwitchConfig,
 };
 use crate::secrets::store::{
     ExportData, SecretCategory, SecretScope, SecretsStore, StoreState, SystemSecrets,
@@ -578,7 +577,6 @@ pub async fn migrate_secrets(State(state): State<Arc<ApiState>>) -> impl IntoRes
     migrate_section_secrets::<DiscordConfig>(&store, &mut doc, &mut migrated);
     migrate_section_secrets::<SlackConfig>(&store, &mut doc, &mut migrated);
     migrate_section_secrets::<TelegramConfig>(&store, &mut doc, &mut migrated);
-    migrate_section_secrets::<TwitchConfig>(&store, &mut doc, &mut migrated);
     migrate_section_secrets::<EmailConfig>(&store, &mut doc, &mut migrated);
 
     // Write updated config.toml if any migrations were made.

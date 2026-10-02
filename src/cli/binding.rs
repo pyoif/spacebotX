@@ -19,7 +19,7 @@ pub enum BindingCommand {
     Create {
         /// Agent ID to bind
         agent_id: String,
-        /// Platform channel (discord, slack, telegram, email, webhook, twitch, mattermost, signal)
+        /// Platform channel (discord, slack, telegram, email, webhook, mattermost, signal)
         channel: String,
         /// Named adapter instance (defaults to the platform's default instance)
         #[arg(short, long)]

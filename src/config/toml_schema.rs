@@ -581,7 +581,6 @@ pub(super) struct TomlMessagingConfig {
     pub(super) telegram: Option<TomlTelegramConfig>,
     pub(super) email: Option<TomlEmailConfig>,
     pub(super) webhook: Option<TomlWebhookConfig>,
-    pub(super) twitch: Option<TomlTwitchConfig>,
     pub(super) signal: Option<TomlSignalConfig>,
     #[serde(default)]
     pub(super) mattermost: Option<TomlMattermostConfig>,
@@ -748,41 +747,6 @@ pub(super) struct TomlWebhookConfig {
     #[serde(default = "default_webhook_bind")]
     pub(super) bind: String,
     pub(super) auth_token: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct TomlTwitchConfig {
-    #[serde(default)]
-    pub(super) enabled: bool,
-    pub(super) username: Option<String>,
-    pub(super) oauth_token: Option<String>,
-    pub(super) client_id: Option<String>,
-    pub(super) client_secret: Option<String>,
-    pub(super) refresh_token: Option<String>,
-    #[serde(default)]
-    pub(super) instances: Vec<TomlTwitchInstanceConfig>,
-    #[serde(default)]
-    pub(super) channels: Vec<String>,
-    #[serde(default)]
-    pub(super) authority: Vec<String>,
-    pub(super) trigger_prefix: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct TomlTwitchInstanceConfig {
-    pub(super) name: String,
-    #[serde(default)]
-    pub(super) enabled: bool,
-    pub(super) username: Option<String>,
-    pub(super) oauth_token: Option<String>,
-    pub(super) client_id: Option<String>,
-    pub(super) client_secret: Option<String>,
-    pub(super) refresh_token: Option<String>,
-    #[serde(default)]
-    pub(super) channels: Vec<String>,
-    #[serde(default)]
-    pub(super) authority: Vec<String>,
-    pub(super) trigger_prefix: Option<String>,
 }
 
 #[derive(Deserialize)]

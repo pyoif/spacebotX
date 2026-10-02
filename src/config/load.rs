@@ -19,7 +19,7 @@ use super::{
     MemoryPersistenceConfig, MessagingConfig, MetricsConfig, OpenCodeConfig,
     ParticipantContextConfig, ProjectsConfig, ProviderConfig, ReflectionConfig, SignalConfig,
     SignalInstanceConfig, SkillsConfig, SlackConfig, SlackInstanceConfig, TelegramConfig,
-    TelegramInstanceConfig, TelemetryConfig, TwitchConfig, TwitchInstanceConfig, WarmupConfig,
+    TelegramInstanceConfig, TelemetryConfig, WarmupConfig,
     WebhookConfig, normalize_adapter, validate_named_messaging_adapters,
 };
 use crate::error::{ConfigError, Result};
@@ -2418,86 +2418,6 @@ impl Config {
                 port: w.port,
                 bind: w.bind,
                 auth_token: w.auth_token.as_deref().and_then(resolve_env_value),
-            }),
-            twitch: toml.messaging.twitch.and_then(|t| {
-                let instances = t
-                    .instances
-                    .into_iter()
-                    .map(|instance| {
-                        let username = instance.username.as_deref().and_then(resolve_env_value);
-                        let oauth_token = instance
-                            .oauth_token
-                            .as_deref()
-                            .and_then(resolve_env_value);
-                        if instance.enabled && (username.is_none() || oauth_token.is_none()) {
-                            tracing::warn!(
-                                adapter = %instance.name,
-                                "twitch instance is enabled but credentials are missing/unresolvable — disabling"
-                            );
-                        }
-                        let has_credentials = username.is_some() && oauth_token.is_some();
-                        let client_id = instance.client_id.as_deref().and_then(resolve_env_value);
-                        let client_secret = instance
-                            .client_secret
-                            .as_deref()
-                            .and_then(resolve_env_value);
-                        let refresh_token = instance
-                            .refresh_token
-                            .as_deref()
-                            .and_then(resolve_env_value);
-                        TwitchInstanceConfig {
-                            authority: instance.authority,
-                            name: instance.name,
-                            enabled: instance.enabled && has_credentials,
-                            username: username.unwrap_or_default(),
-                            oauth_token: oauth_token.unwrap_or_default(),
-                            client_id,
-                            client_secret,
-                            refresh_token,
-                            channels: instance.channels,
-                            trigger_prefix: instance.trigger_prefix,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-                let username = std::env::var("TWITCH_BOT_USERNAME")
-                    .ok()
-                    .or_else(|| t.username.as_deref().and_then(resolve_env_value));
-                let oauth_token = std::env::var("TWITCH_OAUTH_TOKEN")
-                    .ok()
-                    .or_else(|| t.oauth_token.as_deref().and_then(resolve_env_value));
-
-                if (username.is_none() || oauth_token.is_none()) && instances.is_empty() {
-                    return None;
-                }
-
-                let client_id = t
-                    .client_id
-                    .as_deref()
-                    .and_then(resolve_env_value)
-                    .or_else(|| std::env::var("TWITCH_CLIENT_ID").ok());
-                let client_secret = t
-                    .client_secret
-                    .as_deref()
-                    .and_then(resolve_env_value)
-                    .or_else(|| std::env::var("TWITCH_CLIENT_SECRET").ok());
-                let refresh_token = t
-                    .refresh_token
-                    .as_deref()
-                    .and_then(resolve_env_value)
-                    .or_else(|| std::env::var("TWITCH_REFRESH_TOKEN").ok());
-                Some(TwitchConfig {
-                    authority: t.authority,
-                    enabled: t.enabled,
-                    username: username.unwrap_or_default(),
-                    oauth_token: oauth_token.unwrap_or_default(),
-                    client_id,
-                    client_secret,
-                    refresh_token,
-                    instances,
-                    channels: t.channels,
-                    trigger_prefix: t.trigger_prefix,
-                })
             }),
             signal: toml.messaging.signal.and_then(|s| {
                 let instances = s

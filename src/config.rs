@@ -16,7 +16,7 @@ pub use load::set_resolve_secrets_store;
 pub use onboarding::run_onboarding;
 pub use permissions::{
     DiscordPermissions, MattermostPermissions, SignalPermissions, SlackPermissions,
-    TelegramPermissions, TwitchPermissions,
+    TelegramPermissions,
 };
 pub(crate) use providers::default_provider_config;
 pub use runtime::RuntimeConfig;
@@ -1667,7 +1667,6 @@ id = "main"
             }),
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -1720,7 +1719,6 @@ id = "main"
             }),
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -1790,7 +1788,6 @@ id = "main"
                 instances: vec![],
             }),
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -1836,7 +1833,6 @@ id = "main"
             }),
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -1883,7 +1879,6 @@ id = "main"
             }),
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -1968,7 +1963,6 @@ id = "main"
             telegram: None,
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -2002,7 +1996,6 @@ id = "main"
             telegram: None,
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -2047,7 +2040,6 @@ id = "main"
             }),
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };
@@ -2087,7 +2079,6 @@ id = "main"
             }),
             email: None,
             webhook: None,
-            twitch: None,
             signal: None,
             mattermost: None,
         };

@@ -348,11 +348,6 @@ fn extract_platform_meta(
                 }
             }
         }
-        "twitch" => {
-            if let Some(value) = metadata.get("twitch_channel") {
-                meta.insert("twitch_channel".to_string(), value.clone());
-            }
-        }
         "email" => {
             for key in [
                 "email_from",

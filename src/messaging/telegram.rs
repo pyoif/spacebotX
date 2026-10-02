@@ -1166,7 +1166,7 @@ fn build_metadata(
     }
 
     // Compute combined mentions-or-replies-to-bot flag for require_mention.
-    // Matches the pattern used by Discord/Slack/Twitch adapters.
+    // Matches the pattern used by Discord/Slack adapters.
     let mut mentions_or_replies_to_bot = false;
 
     if let Some(text) = extract_text(message)

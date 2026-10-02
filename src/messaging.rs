@@ -1,4 +1,4 @@
-//! Messaging adapters (Discord, Slack, Telegram, Twitch, Signal, Email, Webhook, Portal, Mattermost).
+//! Messaging adapters (Discord, Slack, Telegram, Signal, Email, Webhook, Portal, Mattermost).
 
 pub mod discord;
 pub mod email;
@@ -10,7 +10,6 @@ pub mod slack;
 pub mod target;
 pub mod telegram;
 pub mod traits;
-pub mod twitch;
 pub mod webhook;
 
 pub use manager::{ConfiguredAdapter, MessagingManager};

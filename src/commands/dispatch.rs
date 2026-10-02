@@ -68,10 +68,6 @@ pub(crate) fn stamp_authority(message: &mut InboundMessage, scope: &DispatchScop
         binding_authority: scope.binding_authority,
         adapter_default: scope.adapter_defaults.for_adapter(message.adapter_key()),
         sender_id: &message.sender_id,
-        sender_login: message
-            .metadata
-            .get("twitch_user_login")
-            .and_then(|value| value.as_str()),
     }
     .is_authority();
 

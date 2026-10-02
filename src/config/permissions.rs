@@ -1,7 +1,7 @@
 use super::{
     Binding, DiscordConfig, DiscordInstanceConfig, MattermostConfig, MattermostInstanceConfig,
     SignalConfig, SignalInstanceConfig, SlackConfig, SlackInstanceConfig, TelegramConfig,
-    TelegramInstanceConfig, TwitchConfig, TwitchInstanceConfig,
+    TelegramInstanceConfig,
 };
 use std::collections::HashMap;
 
@@ -274,77 +274,6 @@ impl TelegramPermissions {
             chat_filter,
             dm_allowed_users,
         }
-    }
-}
-
-/// Hot-reloadable Twitch permission filters.
-///
-/// Shared with the Twitch adapter via `Arc<ArcSwap<..>>` for hot-reloading.
-#[derive(Debug, Clone, Default)]
-pub struct TwitchPermissions {
-    /// Allowed channel names (None = all joined channels accepted).
-    pub channel_filter: Option<Vec<String>>,
-    /// User login names allowed to interact with the bot. Empty = all users.
-    pub allowed_users: Vec<String>,
-}
-
-impl TwitchPermissions {
-    /// Build from the current config's twitch settings and bindings.
-    pub fn from_config(_twitch: &TwitchConfig, bindings: &[Binding]) -> Self {
-        Self::from_bindings_for_adapter(bindings, None)
-    }
-
-    /// Build permissions for a named Twitch adapter instance.
-    pub fn from_instance_config(instance: &TwitchInstanceConfig, bindings: &[Binding]) -> Self {
-        Self::from_bindings_for_adapter(bindings, Some(instance.name.as_str()))
-    }
-
-    fn from_bindings_for_adapter(bindings: &[Binding], adapter_selector: Option<&str>) -> Self {
-        let twitch_bindings: Vec<&Binding> = bindings
-            .iter()
-            .filter(|binding| {
-                binding.channel == "twitch"
-                    && binding_adapter_selector_matches(binding, adapter_selector)
-            })
-            .collect();
-
-        let channel_filter = {
-            let channel_ids: Vec<String> = twitch_bindings
-                .iter()
-                .flat_map(|b| b.channel_ids.clone())
-                .collect();
-            if channel_ids.is_empty() {
-                None
-            } else {
-                Some(channel_ids)
-            }
-        };
-
-        let mut allowed_users: Vec<String> = Vec::new();
-        for binding in &twitch_bindings {
-            for id in &binding.dm_allowed_users {
-                if !allowed_users.contains(id) {
-                    allowed_users.push(id.clone());
-                }
-            }
-        }
-
-        Self {
-            channel_filter,
-            allowed_users,
-        }
-    }
-
-    /// Whether `login` may interact with the bot. Fail-open: an empty
-    /// allowlist accepts all users (Twitch's existing semantics). A `"*"`
-    /// entry is an explicit allow-all wildcard; matching is case-insensitive
-    /// (Twitch logins are case-insensitive).
-    pub fn user_allowed(&self, login: &str) -> bool {
-        self.allowed_users.is_empty()
-            || self
-                .allowed_users
-                .iter()
-                .any(|u| u == "*" || u.eq_ignore_ascii_case(login))
     }
 }
 
@@ -640,13 +569,6 @@ mod dm_wildcard_tests {
         }
     }
 
-    fn twitch(users: Vec<&str>) -> TwitchPermissions {
-        TwitchPermissions {
-            channel_filter: None,
-            allowed_users: users.into_iter().map(String::from).collect(),
-        }
-    }
-
     // --- Slack: fail-closed DM allowlist ---
 
     #[test]
@@ -687,27 +609,4 @@ mod dm_wildcard_tests {
         assert!(!p.dm_user_allowed("other-user"));
     }
 
-    // --- Twitch: fail-open user allowlist, case-insensitive ---
-
-    #[test]
-    fn twitch_empty_allows_all() {
-        assert!(twitch(vec![]).user_allowed("anyone"));
-    }
-
-    #[test]
-    fn twitch_wildcard_allows_all() {
-        // Before this change, ["*"] would have rejected everyone except a
-        // literal "*" login — the footgun this wildcard support removes.
-        let p = twitch(vec!["*"]);
-        assert!(p.user_allowed("SomeStreamer"));
-        assert!(p.user_allowed("another_viewer"));
-    }
-
-    #[test]
-    fn twitch_specific_is_case_insensitive() {
-        let p = twitch(vec!["CoolMod"]);
-        assert!(p.user_allowed("coolmod"));
-        assert!(p.user_allowed("COOLMOD"));
-        assert!(!p.user_allowed("someone_else"));
-    }
 }

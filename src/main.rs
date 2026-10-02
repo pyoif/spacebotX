@@ -1109,7 +1109,6 @@ async fn run(
         let mut discord_permissions = None;
         let mut slack_permissions = None;
         let mut telegram_permissions = None;
-        let mut twitch_permissions = None;
         let mut mattermost_permissions = None;
         let mut signal_permissions = None;
         initialize_agents(
@@ -1128,7 +1127,6 @@ async fn run(
             &mut discord_permissions,
             &mut slack_permissions,
             &mut telegram_permissions,
-            &mut twitch_permissions,
             &mut mattermost_permissions,
             &mut signal_permissions,
             agent_links.clone(),
@@ -1152,7 +1150,6 @@ async fn run(
             discord_permissions,
             slack_permissions,
             telegram_permissions,
-            twitch_permissions,
             mattermost_permissions,
             signal_permissions,
             bindings.clone(),
@@ -1171,7 +1168,6 @@ async fn run(
             None, // discord_permissions
             None, // slack_permissions
             None, // telegram_permissions
-            None, // twitch_permissions
             None, // mattermost_permissions
             None, // signal_permissions
             bindings.clone(),
@@ -1932,7 +1928,6 @@ async fn run(
                                 let mut new_discord_permissions = None;
                                 let mut new_slack_permissions = None;
                                 let mut new_telegram_permissions = None;
-                                let mut new_twitch_permissions = None;
                                 let mut new_mattermost_permissions = None;
                                 let mut new_signal_permissions = None;
                                 match initialize_agents(
@@ -1951,7 +1946,6 @@ async fn run(
                                     &mut new_discord_permissions,
                                     &mut new_slack_permissions,
                                     &mut new_telegram_permissions,
-                                    &mut new_twitch_permissions,
                                     &mut new_mattermost_permissions,
                                     &mut new_signal_permissions,
                                     agent_links.clone(),
@@ -1976,7 +1970,6 @@ async fn run(
                                             new_discord_permissions,
                                             new_slack_permissions,
                                             new_telegram_permissions,
-                                            new_twitch_permissions,
                                             new_mattermost_permissions,
                                             new_signal_permissions,
                                             bindings.clone(),
@@ -2160,7 +2153,6 @@ async fn initialize_agents(
     discord_permissions: &mut Option<Arc<ArcSwap<spacebot::config::DiscordPermissions>>>,
     slack_permissions: &mut Option<Arc<ArcSwap<spacebot::config::SlackPermissions>>>,
     telegram_permissions: &mut Option<Arc<ArcSwap<spacebot::config::TelegramPermissions>>>,
-    twitch_permissions: &mut Option<Arc<ArcSwap<spacebot::config::TwitchPermissions>>>,
     mattermost_permissions: &mut Option<Arc<ArcSwap<spacebot::config::MattermostPermissions>>>,
     signal_permissions: &mut Option<Arc<ArcSwap<spacebot::config::SignalPermissions>>>,
     agent_links: Arc<ArcSwap<Vec<spacebot::links::AgentLink>>>,
@@ -2898,72 +2890,6 @@ async fn initialize_agents(
             webhook_config.auth_token.clone(),
         );
         new_messaging_manager.register(adapter).await;
-    }
-
-    // Shared Twitch permissions (hot-reloadable via file watcher)
-    *twitch_permissions = config.messaging.twitch.as_ref().map(|twitch_config| {
-        let perms =
-            spacebot::config::TwitchPermissions::from_config(twitch_config, &config.bindings);
-        Arc::new(ArcSwap::from_pointee(perms))
-    });
-
-    if let Some(twitch_config) = &config.messaging.twitch
-        && twitch_config.enabled
-    {
-        let twitch_token_path = config.instance_dir.join("twitch_token.json");
-        if !twitch_config.username.is_empty() && !twitch_config.oauth_token.is_empty() {
-            let adapter = spacebot::messaging::twitch::TwitchAdapter::new(
-                "twitch",
-                &twitch_config.username,
-                &twitch_config.oauth_token,
-                twitch_config.client_id.clone(),
-                twitch_config.client_secret.clone(),
-                twitch_config.refresh_token.clone(),
-                Some(twitch_token_path),
-                twitch_config.channels.clone(),
-                twitch_config.trigger_prefix.clone(),
-                twitch_permissions.clone().ok_or_else(|| {
-                    anyhow::anyhow!("twitch permissions not initialized when twitch is enabled")
-                })?,
-            );
-            new_messaging_manager.register(adapter).await;
-        }
-
-        for instance in twitch_config
-            .instances
-            .iter()
-            .filter(|instance| instance.enabled)
-        {
-            if instance.username.is_empty() || instance.oauth_token.is_empty() {
-                tracing::warn!(adapter = %instance.name, "skipping enabled twitch instance with missing credentials");
-                continue;
-            }
-            let runtime_key = spacebot::config::binding_runtime_adapter_key(
-                "twitch",
-                Some(instance.name.as_str()),
-            );
-            let token_file_name = spacebot::config::named_twitch_token_file_name(&instance.name);
-            let token_path = config.instance_dir.join(token_file_name);
-            let perms = Arc::new(ArcSwap::from_pointee(
-                spacebot::config::TwitchPermissions::from_instance_config(
-                    instance,
-                    &config.bindings,
-                ),
-            ));
-            let adapter = spacebot::messaging::twitch::TwitchAdapter::new(
-                runtime_key,
-                &instance.username,
-                &instance.oauth_token,
-                instance.client_id.clone(),
-                instance.client_secret.clone(),
-                instance.refresh_token.clone(),
-                Some(token_path),
-                instance.channels.clone(),
-                instance.trigger_prefix.clone(),
-                perms,
-            );
-            new_messaging_manager.register(adapter).await;
-        }
     }
 
     // Shared Mattermost permissions (hot-reloadable via file watcher)

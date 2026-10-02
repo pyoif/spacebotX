@@ -45,12 +45,6 @@ impl AdapterAuthorityDefaults {
                 insert(format!("telegram:{}", instance.name), &instance.authority);
             }
         }
-        if let Some(twitch) = &messaging.twitch {
-            insert("twitch".into(), &twitch.authority);
-            for instance in &twitch.instances {
-                insert(format!("twitch:{}", instance.name), &instance.authority);
-            }
-        }
         if let Some(signal) = &messaging.signal {
             insert("signal".into(), &signal.authority);
             for instance in &signal.instances {
@@ -91,9 +85,6 @@ pub struct AccessContext<'a> {
     pub adapter_default: Option<&'a [String]>,
     /// Platform user id (`InboundMessage.sender_id`).
     pub sender_id: &'a str,
-    /// Twitch login, compared case-insensitively — Twitch surfaces logins to
-    /// users while `sender_id` carries the numeric id.
-    pub sender_login: Option<&'a str>,
 }
 
 impl AccessContext<'_> {
@@ -113,11 +104,7 @@ impl AccessContext<'_> {
         };
 
         list.iter().any(|entry| {
-            entry == "*"
-                || entry == self.sender_id
-                || self
-                    .sender_login
-                    .is_some_and(|login| entry.eq_ignore_ascii_case(login))
+            entry == "*" || entry == self.sender_id
         })
     }
 
@@ -288,7 +275,6 @@ mod tests {
             binding_authority: None,
             adapter_default: None,
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(context.is_authority());
         assert!(context.allows(def("quiet")));
@@ -301,7 +287,6 @@ mod tests {
             binding_authority: None,
             adapter_default: Some(&empty),
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(context.is_authority());
     }
@@ -314,7 +299,6 @@ mod tests {
             binding_authority: Some(&empty),
             adapter_default: Some(&adapter),
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(context.is_authority());
         assert!(context.allows(def("quiet")));
@@ -327,7 +311,6 @@ mod tests {
             binding_authority: None,
             adapter_default: Some(&adapter),
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(!context.is_authority());
         assert!(!context.allows(def("quiet")));
@@ -340,7 +323,6 @@ mod tests {
             binding_authority: Some(&authority),
             adapter_default: None,
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(!context.is_authority());
         assert!(!context.allows(def("quiet")));
@@ -357,7 +339,6 @@ mod tests {
             binding_authority: Some(&binding),
             adapter_default: Some(&adapter),
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(context.is_authority());
 
@@ -365,7 +346,6 @@ mod tests {
             binding_authority: Some(&adapter),
             adapter_default: Some(&binding),
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(!excluded.is_authority());
     }
@@ -377,7 +357,6 @@ mod tests {
             binding_authority: None,
             adapter_default: Some(&adapter),
             sender_id: "12345",
-            sender_login: None,
         };
         assert!(context.is_authority());
     }
@@ -389,19 +368,6 @@ mod tests {
             binding_authority: Some(&authority),
             adapter_default: None,
             sender_id: "anyone",
-            sender_login: None,
-        };
-        assert!(context.is_authority());
-    }
-
-    #[test]
-    fn twitch_logins_match_case_insensitively() {
-        let authority = owned(&["StreamerName"]);
-        let context = AccessContext {
-            binding_authority: Some(&authority),
-            adapter_default: None,
-            sender_id: "44556677",
-            sender_login: Some("streamername"),
         };
         assert!(context.is_authority());
     }

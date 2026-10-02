@@ -62,7 +62,7 @@ pub struct CommandAvailability {
     pub discord: bool,
     pub slack: bool,
     pub telegram: bool,
-    /// Signal, Mattermost, Twitch, Email, Webhook.
+    /// Signal, Mattermost, Email, Webhook.
     pub text_adapters: bool,
 }
 

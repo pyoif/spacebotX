@@ -129,22 +129,6 @@ pub fn resolve_broadcast_target(channel: &ChannelInfo) -> Option<BroadcastTarget
                 }
             }
         }
-        "twitch" => {
-            if let Some(channel_login) = channel
-                .platform_meta
-                .as_ref()
-                .and_then(|meta| meta.get("twitch_channel"))
-                .and_then(json_value_to_string)
-            {
-                channel_login
-            } else {
-                let parts: Vec<&str> = channel.id.split(':').collect();
-                match parts.as_slice() {
-                    ["twitch", channel_login] => (*channel_login).to_string(),
-                    _ => return None,
-                }
-            }
-        }
         "signal" => {
             // Signal channels store target in signal_target metadata
             if let Some(signal_target) = channel
@@ -231,7 +215,6 @@ pub fn normalize_target(adapter: &str, raw_target: &str) -> Option<String> {
         "discord" => normalize_discord_target(trimmed),
         "slack" => normalize_slack_target(trimmed),
         "telegram" => normalize_telegram_target(trimmed),
-        "twitch" => normalize_twitch_target(trimmed),
         "email" => normalize_email_target(trimmed),
         "mattermost" => normalize_mattermost_target(trimmed),
         // Portal targets are full conversation IDs (e.g. "portal:chat:main")
@@ -297,16 +280,6 @@ fn normalize_telegram_target(raw_target: &str) -> Option<String> {
     let target = strip_repeated_prefix(raw_target, "telegram");
     let chat_id = target.parse::<i64>().ok()?;
     Some(chat_id.to_string())
-}
-
-fn normalize_twitch_target(raw_target: &str) -> Option<String> {
-    let target = strip_repeated_prefix(raw_target, "twitch");
-    let channel_login = target.strip_prefix('#').unwrap_or(target);
-    if channel_login.is_empty() {
-        None
-    } else {
-        Some(channel_login.to_string())
-    }
 }
 
 /// Extract the runtime adapter key from a Mattermost conversation ID.
@@ -744,32 +717,6 @@ mod tests {
             Some(super::BroadcastTarget {
                 adapter: "slack".to_string(),
                 target: "C012345".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_twitch_target_with_prefix() {
-        let parsed = parse_delivery_target("twitch:twitch:jamiepinelive");
-        assert_eq!(
-            parsed,
-            Some(super::BroadcastTarget {
-                adapter: "twitch".to_string(),
-                target: "jamiepinelive".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn resolve_twitch_target_from_channel_id() {
-        let channel = test_channel_info("twitch:jamiepinelive", "twitch");
-        let resolved = resolve_broadcast_target(&channel);
-
-        assert_eq!(
-            resolved,
-            Some(super::BroadcastTarget {
-                adapter: "twitch".to_string(),
-                target: "jamiepinelive".to_string(),
             })
         );
     }

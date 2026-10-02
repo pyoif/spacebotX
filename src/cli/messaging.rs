@@ -20,7 +20,7 @@ pub enum MessagingCommand {
     Status,
     /// Enable or disable a platform or named instance
     Toggle {
-        /// Platform name (discord, slack, telegram, email, webhook, twitch, mattermost, signal)
+        /// Platform name (discord, slack, telegram, email, webhook, mattermost, signal)
         platform: String,
         /// Desired state
         state: ToggleState,
@@ -92,7 +92,6 @@ pub async fn run(ctx: &super::Context, messaging_cmd: MessagingCommand) -> anyho
                 platform_row("telegram", &status.telegram),
                 platform_row("email", &status.email),
                 platform_row("webhook", &status.webhook),
-                platform_row("twitch", &status.twitch),
                 platform_row("mattermost", &status.mattermost),
                 platform_row("signal", &status.signal),
             ];

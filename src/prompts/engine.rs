@@ -217,7 +217,6 @@ impl PromptEngine {
             "adapters/telegram",
             "adapters/mattermost",
             "adapters/portal",
-            "adapters/twitch",
             "adapters/webhook",
         ] {
             env.add_template(adapter, crate::prompts::text::get(adapter))?;
@@ -851,7 +850,6 @@ impl PromptEngine {
             "telegram" => "adapters/telegram",
             "mattermost" => "adapters/mattermost",
             "portal" => "adapters/portal",
-            "twitch" => "adapters/twitch",
             "webhook" => "adapters/webhook",
             _ => return None,
         };
@@ -1412,7 +1410,6 @@ mod tests {
             "telegram",
             "mattermost",
             "portal",
-            "twitch",
             "webhook",
         ] {
             // A mapped adapter whose template is missing renders as None and

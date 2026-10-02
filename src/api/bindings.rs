@@ -94,16 +94,6 @@ pub(super) struct PlatformCredentials {
     email_from_address: Option<String>,
     #[serde(default)]
     email_from_name: Option<String>,
-    #[serde(default)]
-    twitch_username: Option<String>,
-    #[serde(default)]
-    twitch_oauth_token: Option<String>,
-    #[serde(default)]
-    twitch_client_id: Option<String>,
-    #[serde(default)]
-    twitch_client_secret: Option<String>,
-    #[serde(default)]
-    twitch_refresh_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -270,7 +260,6 @@ pub(super) async fn create_binding(
     let mut new_slack_tokens: Option<(String, String)> = None;
     let mut new_telegram_token: Option<String> = None;
     let mut new_email_configured = false;
-    let mut new_twitch_creds: Option<(String, String)> = None;
 
     if let Some(credentials) = &request.platform_credentials {
         if let Some(token) = &credentials.discord_token
@@ -415,40 +404,6 @@ pub(super) async fn create_binding(
             }
 
             new_email_configured = true;
-        }
-
-        if let Some(username) = &credentials.twitch_username {
-            let oauth_token = credentials.twitch_oauth_token.as_deref().unwrap_or("");
-            let client_id = credentials.twitch_client_id.as_deref().unwrap_or("");
-            let client_secret = credentials.twitch_client_secret.as_deref().unwrap_or("");
-            let refresh_token = credentials.twitch_refresh_token.as_deref().unwrap_or("");
-            if !username.is_empty() && !oauth_token.is_empty() {
-                if doc.get("messaging").is_none() {
-                    doc["messaging"] = toml_edit::Item::Table(toml_edit::Table::new());
-                }
-                let messaging = doc["messaging"]
-                    .as_table_mut()
-                    .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-                if !messaging.contains_key("twitch") {
-                    messaging["twitch"] = toml_edit::Item::Table(toml_edit::Table::new());
-                }
-                let twitch = messaging["twitch"]
-                    .as_table_mut()
-                    .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-                twitch["enabled"] = toml_edit::value(true);
-                twitch["username"] = toml_edit::value(username.as_str());
-                twitch["oauth_token"] = toml_edit::value(oauth_token);
-                if !client_id.is_empty() {
-                    twitch["client_id"] = toml_edit::value(client_id);
-                }
-                if !client_secret.is_empty() {
-                    twitch["client_secret"] = toml_edit::value(client_secret);
-                }
-                if !refresh_token.is_empty() {
-                    twitch["refresh_token"] = toml_edit::value(refresh_token);
-                }
-                new_twitch_creds = Some((username.clone(), oauth_token.to_string()));
-            }
         }
     }
 
@@ -667,37 +622,6 @@ pub(super) async fn create_binding(
                     Err(error) => {
                         tracing::error!(%error, "failed to build email adapter");
                     }
-                }
-            }
-
-            if let Some((username, oauth_token)) = new_twitch_creds {
-                let Some(twitch_config) = new_config.messaging.twitch.as_ref() else {
-                    tracing::error!("twitch config missing despite credentials being provided");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                };
-                let twitch_perms = {
-                    let perms = crate::config::TwitchPermissions::from_config(
-                        twitch_config,
-                        &new_config.bindings,
-                    );
-                    std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(perms))
-                };
-                let instance_dir = state.instance_dir.load();
-                let token_path = instance_dir.join("twitch_token.json");
-                let adapter = crate::messaging::twitch::TwitchAdapter::new(
-                    "twitch",
-                    &username,
-                    &oauth_token,
-                    twitch_config.client_id.clone(),
-                    twitch_config.client_secret.clone(),
-                    twitch_config.refresh_token.clone(),
-                    Some(token_path),
-                    twitch_config.channels.clone(),
-                    twitch_config.trigger_prefix.clone(),
-                    twitch_perms,
-                );
-                if let Err(error) = manager.register_and_start(adapter).await {
-                    tracing::error!(%error, "failed to hot-start twitch adapter");
                 }
             }
         }
