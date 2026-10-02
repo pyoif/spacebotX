@@ -35,22 +35,83 @@ const STALE_ZOMBIE_AGE: Duration = Duration::from_secs(30);
 
 /// Spawn the background reaper task. Safe to call once at daemon startup; it
 /// runs for the lifetime of the process and never returns.
+///
+/// The sweep runs on two triggers, both feeding the *same* stale-only logic:
+///
+/// 1. **SIGCHLD wake** — when any child exits, the kernel delivers SIGCHLD and
+///    we sweep almost immediately (sub-second), so a leaked zombie is collected
+///    long before the periodic tick. We register via
+///    [`tokio::signal::unix::signal`], which uses the signal-hook-registry
+///    demultiplexer: tokio's own process driver also listens for SIGCHLD, and
+///    the registry lets both callbacks coexist instead of one stealing the
+///    signal from the other.
+/// 2. **Periodic tick** — the correctness floor. SIGCHLD is standard (non-RT)
+///    and may be coalesced or, in principle, missed around registration; the
+///    30s tick guarantees a sweep regardless.
+///
+/// The signal only *accelerates detection*. The age guard in
+/// [`sweep_stale_zombies`] is unchanged and remains the safety property: we
+/// never reap a zombie younger than [`STALE_ZOMBIE_AGE`], so we can never steal
+/// the exit status of a child that still has a live `wait()` owner.
 pub fn spawn() {
     tokio::spawn(async {
+        // Signal wake. If registration fails (e.g. unusual platform), fall back
+        // to the periodic tick alone rather than losing the reaper entirely.
+        let mut sigchld = match tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::child(),
+        ) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "zombie reaper: could not register SIGCHLD wake; \
+                     falling back to periodic sweep only"
+                );
+                None
+            }
+        };
+
         let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
         // The first tick fires immediately; skip it so we do not race startup.
         ticker.tick().await;
+
         loop {
-            ticker.tick().await;
-            let reaped = sweep_stale_zombies();
-            if reaped > 0 {
-                tracing::info!(
-                    reaped,
-                    "zombie reaper collected stale child processes (PID-1 duty)"
-                );
+            match sigchld.as_mut() {
+                Some(sig) => {
+                    tokio::select! {
+                        _ = sig.recv() => {}
+                        _ = ticker.tick() => {}
+                    }
+                }
+                None => {
+                    ticker.tick().await;
+                }
+            }
+
+            run_sweep("triggered");
+
+            // After a signal wake, a child that exited *during* the scan may not
+            // be as old as the guard yet. One short follow-up sweep catches it
+            // once it crosses the threshold, without busy-looping.
+            if sigchld.is_some() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                run_sweep("follow-up");
             }
         }
     });
+}
+
+/// Run one sweep and log if anything was collected. `trigger` labels the log
+/// line so signal-driven and tick-driven sweeps can be told apart in logs.
+fn run_sweep(trigger: &'static str) {
+    let reaped = sweep_stale_zombies();
+    if reaped > 0 {
+        tracing::info!(
+            reaped,
+            trigger,
+            "zombie reaper collected stale child processes (PID-1 duty)"
+        );
+    }
 }
 
 /// One sweep. Returns the number of zombies reaped. Never panics: any error
