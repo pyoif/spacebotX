@@ -837,19 +837,20 @@ impl Messaging for TelegramAdapter {
     }
 
     async fn broadcast(&self, target: &str, response: OutboundResponse) -> crate::Result<()> {
-        let chat_id = ChatId(
-            target
-                .parse::<i64>()
-                .context("invalid telegram chat id for broadcast target")?,
-        );
+        // The resolved target may carry a `chat_id:thread_id` suffix for
+        // forum topics (see `resolve_broadcast_target`). Parse both parts so
+        // broadcast/proactive sends land in the originating topic instead of
+        // collapsing into the General topic.
+        let (chat_id, thread_id) = parse_broadcast_target(target)
+            .context("invalid telegram chat id for broadcast target")?;
 
         if let OutboundResponse::Text(text) = response {
-            self.send_text(chat_id, &text, None, None).await?;
+            self.send_text(chat_id, &text, None, thread_id).await?;
         } else if let OutboundResponse::RichMessage { text, poll, .. } = response {
-            self.send_text(chat_id, &text, None, None).await?;
+            self.send_text(chat_id, &text, None, thread_id).await?;
 
             if let Some(poll_data) = poll {
-                send_poll(&self.bot, chat_id, &poll_data, None).await?;
+                send_poll(&self.bot, chat_id, &poll_data, thread_id).await?;
             }
         }
 
@@ -1057,6 +1058,23 @@ fn extract_attachments(message: &teloxide::types::Message) -> Vec<Attachment> {
 
 /// Resolve a Telegram file ID to a download URL via the Bot API.
 ///
+/// Parse a broadcast target that may carry a `chat_id:thread_id` forum-topic
+/// suffix (see `resolve_broadcast_target`). Bare `chat_id` targets (General
+/// topic / plain chats) yield `None` for the thread.
+fn parse_broadcast_target(target: &str) -> anyhow::Result<(ChatId, Option<ThreadId>)> {
+    match target.rsplit_once(':') {
+        Some((chat, thread)) if thread.parse::<i64>().is_ok() => {
+            let chat_id = ChatId(chat.parse::<i64>().context("invalid chat id")?);
+            let thread_id = ThreadId(MessageId(thread.parse::<i64>().context("invalid thread id")? as i32));
+            Ok((chat_id, Some(thread_id)))
+        }
+        _ => {
+            let chat_id = ChatId(target.parse::<i64>().context("invalid chat id")?);
+            Ok((chat_id, None))
+        }
+    }
+}
+
 /// Telegram doesn't provide direct URLs for file attachments. Instead you get a file ID
 /// that must be resolved through `getFile` to obtain the actual download path.
 async fn resolve_file_url(bot: &Bot, file_id: &str) -> anyhow::Result<String> {
@@ -1125,12 +1143,24 @@ fn build_metadata(
         metadata.insert("telegram_chat_title".into(), (*title).into());
         metadata.insert(crate::metadata_keys::SERVER_NAME.into(), (*title).into());
     }
+    // Distinct display names per forum topic. Every message in a topic carries
+    // only the numeric `thread_id` (the topic *title* is only on the creation
+    // service message), so the thread id is the reliable distinguisher. The
+    // General topic keeps the bare chat title — it maps to the base
+    // `telegram:{chat_id}` channel, so a suffixed name would be misleading.
     let channel_name = message
         .chat
         .title()
         .map(|title| title.to_string())
         .or_else(|| message.from.as_ref().map(build_display_name))
         .unwrap_or_else(|| chat_type.to_string());
+    let channel_name = match (
+        message.thread_id,
+        message.thread_id.map(|id| id.0.0 != GENERAL_TOPIC_ID).unwrap_or(false),
+    ) {
+        (Some(thread_id), true) => format!("{} #{thread_id}", channel_name),
+        _ => channel_name,
+    };
     metadata.insert(
         crate::metadata_keys::CHANNEL_NAME.into(),
         channel_name.into(),

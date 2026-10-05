@@ -33,6 +33,18 @@ pub fn parse_delivery_target(raw: &str) -> Option<BroadcastTarget> {
     // Format: platform:<instance>:<target> or platform:<target>
     if raw.starts_with("telegram:") || raw.starts_with("discord:") || raw.starts_with("slack:") {
         let parts: Vec<&str> = raw.split(':').collect();
+        // Telegram chat ids are numeric (and may be negative for supergroups),
+        // optionally followed by a `:thread_id` forum-topic suffix. These must
+        // NOT be misread as `telegram:<instance>:<target>`. When the first
+        // segment parses as an i64, treat the whole thing as a plain target.
+        if raw.starts_with("telegram:") && is_numeric_telegram_target(&parts) {
+            let (adapter, raw_target) = raw.split_once(':')?;
+            let target = normalize_target(adapter, raw_target)?;
+            return Some(BroadcastTarget {
+                adapter: adapter.to_string(),
+                target,
+            });
+        }
         return parse_named_instance_target(&parts);
     }
 
@@ -120,11 +132,25 @@ pub fn resolve_broadcast_target(channel: &ChannelInfo) -> Option<BroadcastTarget
                 .and_then(|meta| meta.get("telegram_chat_id"))
                 .and_then(json_value_to_string)
             {
-                chat_id
+                // Named forum topics carry a thread id. Encode it as a
+                // `chat_id:thread_id` suffix so `broadcast` can target the
+                // originating topic instead of collapsing into General.
+                let thread_id = channel
+                    .platform_meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("telegram_thread_id"))
+                    .and_then(json_value_to_string);
+                match thread_id {
+                    Some(thread) => format!("{chat_id}:{thread}"),
+                    None => chat_id,
+                }
             } else {
                 let parts: Vec<&str> = channel.id.split(':').collect();
                 match parts.as_slice() {
+                    // `telegram:{chat_id}` (General / plain chat)
                     ["telegram", chat_id] => (*chat_id).to_string(),
+                    // `telegram:{chat_id}:{thread_id}` (named forum topic)
+                    ["telegram", chat_id, thread_id] => format!("{chat_id}:{thread_id}"),
                     _ => return None,
                 }
             }
@@ -278,8 +304,24 @@ fn normalize_slack_target(raw_target: &str) -> Option<String> {
 
 fn normalize_telegram_target(raw_target: &str) -> Option<String> {
     let target = strip_repeated_prefix(raw_target, "telegram");
-    let chat_id = target.parse::<i64>().ok()?;
-    Some(chat_id.to_string())
+
+    // Optional `:thread_id` suffix targeting a forum topic. The thread id is
+    // numeric (topic ids are small positive integers); a named-instance prefix
+    // (`telegram:instance:…`) is handled by `parse_named_instance_target` and
+    // never reaches here as a bare target.
+    let (chat_part, thread_part) = match target.rsplit_once(':') {
+        Some((chat, thread)) => (chat, Some(thread)),
+        None => (target, None),
+    };
+
+    let chat_id = chat_part.parse::<i64>().ok()?;
+    match thread_part {
+        Some(thread) => {
+            let thread_id = thread.parse::<i64>().ok()?;
+            Some(format!("{chat_id}:{thread_id}"))
+        }
+        None => Some(chat_id.to_string()),
+    }
 }
 
 /// Extract the runtime adapter key from a Mattermost conversation ID.
@@ -678,6 +720,22 @@ pub fn is_valid_instance_name(name: &str) -> bool {
     // Must contain only alphanumeric characters, underscores, and hyphens
     name.chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// True when a `telegram:` target is a numeric chat id, optionally followed by
+/// a numeric `:thread_id` forum-topic suffix — i.e. a plain target rather than
+/// a `telegram:<instance>:<target>` named-instance form.
+///
+/// Telegram chat ids are signed i64s (negative for supergroups), so a leading
+/// `-` must be accepted. Thread ids are small positive integers.
+fn is_numeric_telegram_target(parts: &[&str]) -> bool {
+    match parts {
+        // telegram:<chat_id>
+        [_, chat] => chat.parse::<i64>().is_ok(),
+        // telegram:<chat_id>:<thread_id>
+        [_, chat, thread] => chat.parse::<i64>().is_ok() && thread.parse::<i64>().is_ok(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1182,5 +1240,69 @@ mod tests {
         // And an implicit adoption can never take it back.
         assert!(!store.adopt_home_channel("discord:333").expect("adopt"));
         assert_eq!(store.home_channel().expect("home").target, "telegram:222");
+    }
+
+    #[test]
+    fn parse_telegram_negative_supergroup_id_with_topic_suffix() {
+        // `telegram:-1004314760743:29` must be read as a plain target with a
+        // forum-topic suffix, NOT as `telegram:<instance>:<target>`.
+        let parsed = parse_delivery_target("telegram:-1004314760743:29");
+        assert_eq!(
+            parsed,
+            Some(super::BroadcastTarget {
+                adapter: "telegram".to_string(),
+                target: "-1004314760743:29".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_telegram_negative_supergroup_id_without_topic() {
+        // General topic / plain supergroup keeps the bare negative chat id.
+        let parsed = parse_delivery_target("telegram:-1004314760743");
+        assert_eq!(
+            parsed,
+            Some(super::BroadcastTarget {
+                adapter: "telegram".to_string(),
+                target: "-1004314760743".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_telegram_broadcast_target_with_thread() {
+        let mut channel = test_channel_info("telegram:-1004314760743:29", "telegram");
+        channel.platform_meta = Some(serde_json::json!({
+            "telegram_chat_id": "-1004314760743",
+            "telegram_thread_id": "29",
+        }));
+
+        let resolved = resolve_broadcast_target(&channel);
+
+        assert_eq!(
+            resolved,
+            Some(super::BroadcastTarget {
+                adapter: "telegram".to_string(),
+                target: "-1004314760743:29".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_telegram_broadcast_target_general_no_thread() {
+        let mut channel = test_channel_info("telegram:-1004314760743", "telegram");
+        channel.platform_meta = Some(serde_json::json!({
+            "telegram_chat_id": "-1004314760743",
+        }));
+
+        let resolved = resolve_broadcast_target(&channel);
+
+        assert_eq!(
+            resolved,
+            Some(super::BroadcastTarget {
+                adapter: "telegram".to_string(),
+                target: "-1004314760743".to_string(),
+            })
+        );
     }
 }

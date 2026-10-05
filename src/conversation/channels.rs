@@ -342,7 +342,14 @@ fn extract_platform_meta(
             }
         }
         "telegram" => {
-            for key in ["telegram_chat_id", "telegram_chat_type"] {
+            for key in [
+                "telegram_chat_id",
+                "telegram_chat_type",
+                // Forum topic (thread) id — without this, outbound routing
+                // cannot tell which topic a channel belongs to and every
+                // named topic collapses into the General topic.
+                "telegram_thread_id",
+            ] {
                 if let Some(value) = metadata.get(key) {
                     meta.insert(key.to_string(), value.clone());
                 }
@@ -517,5 +524,36 @@ mod tests {
             }
         );
         assert!(store.get("chan-live").await.unwrap().is_some());
+    }
+
+    #[test]
+    fn extract_platform_meta_persists_telegram_thread_id() {
+        let mut metadata = HashMap::new();
+        metadata.insert("telegram_chat_id".into(), serde_json::json!("-1004314760743"));
+        metadata.insert("telegram_chat_type".into(), serde_json::json!("supergroup"));
+        metadata.insert("telegram_thread_id".into(), serde_json::json!("29"));
+
+        let blob = extract_platform_meta("telegram", &metadata)
+            .expect("telegram meta should extract");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&blob).expect("blob should be valid JSON");
+
+        assert_eq!(parsed["telegram_chat_id"], "-1004314760743");
+        assert_eq!(parsed["telegram_thread_id"], "29");
+        assert_eq!(parsed["telegram_chat_type"], "supergroup");
+    }
+
+    #[test]
+    fn extract_platform_meta_omits_thread_id_when_absent() {
+        let mut metadata = HashMap::new();
+        metadata.insert("telegram_chat_id".into(), serde_json::json!("-1004314760743"));
+
+        let blob = extract_platform_meta("telegram", &metadata)
+            .expect("telegram meta should extract");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&blob).expect("blob should be valid JSON");
+
+        assert_eq!(parsed["telegram_chat_id"], "-1004314760743");
+        assert!(parsed.get("telegram_thread_id").is_none());
     }
 }
