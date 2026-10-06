@@ -71,35 +71,59 @@ RUN SPACEBOT_SKIP_FRONTEND_BUILD=1 cargo build --release --features metrics \
 # ---- Runtime stage ----
 # Minimal runtime with Chrome runtime libraries for fetcher-downloaded Chromium.
 # Chrome itself is downloaded on first browser tool use and cached on the volume.
-FROM debian:bookworm-slim
+#
+# Base is Chainguard Wolfi (glibc-based, apk packages) instead of Debian. The
+# package list below mirrors the previous apt list; every name was verified
+# against https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz:
+#   apt libsqlite3-0 -> sqlite-libs (provides so:libsqlite3.so.0)
+#   apt libatk-bridge2.0-0 -> libatk-bridge-2.0, libgbm1 -> mesa-gbm,
+#   libdrm2 -> libdrm-libs, libasound2 -> alsa-lib, libpango-1.0-0 -> pango,
+#   libcairo2 -> cairo, libcups2 -> cups-libs, libnss3 -> libnss,
+#   fonts-liberation -> font-liberation, gh -> gh.
+# Also installs the Node toolchain (nodejs-22 + npm) so that `nub`/`npm`/`npx`
+# are available for stdio MCP servers, plus git (shelled out to by `nubx` when
+# resolving `github:` specs) and libatomic (needed by nub's bundled Node
+# runtime). Bash is present for scripts with a bash shebang.
+FROM cgr.dev/chainguard/wolfi-base:latest
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Chrome runtime dependencies below are required whether Chrome is
+# system-installed or downloaded by the built-in fetcher. The fetcher provides
+# the browser binary; these are the shared libraries it links against.
+# (Comment kept OUT of the multi-line apk command: a `#` inside a
+# backslash-continued RUN list truncates the command and breaks the build.)
+RUN apk add --no-cache \
     ca-certificates \
-    libsqlite3-0 \
+    ca-certificates-bundle \
+    sqlite-libs \
     curl \
     gh \
     bubblewrap \
     openssh-server \
-    # Chrome runtime dependencies — required whether Chrome is system-installed
-    # or downloaded by the built-in fetcher. The fetcher provides the browser
-    # binary; these are the shared libraries it links against.
-    fonts-liberation \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libdrm2 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libcups2 \
-    libxkbcommon0 \
-    libxss1 \
-    libxtst6 \
-    libxfixes3 \
-    && rm -rf /var/lib/apt/lists/*
+    openssh-client \
+    bash \
+    git \
+    libatomic \
+    nodejs-22 \
+    npm \
+    font-liberation \
+    libnss \
+    libatk-bridge-2.0 \
+    libdrm-libs \
+    libxcomposite \
+    libxdamage \
+    libxrandr \
+    mesa-gbm \
+    alsa-lib \
+    pango \
+    cairo \
+    cups-libs \
+    libxkbcommon \
+    libxss \
+    libxtst \
+    libxfixes \
+    && npm install -g nub \
+    && npm cache clean --force \
+    && rm -rf /root/.npm /tmp/*
 
 COPY --from=builder /usr/local/bin/spacebot /usr/local/bin/spacebot
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
