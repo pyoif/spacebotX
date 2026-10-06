@@ -29,12 +29,45 @@ const REJECTED_USERS_CAPACITY: usize = 50;
 /// Telegram's `General` forum topic id.
 ///
 /// Every forum supergroup has a General topic whose thread id is always `1`.
-/// The Bot API rejects sends that explicitly target it with
-/// `message_thread_id: 1`, so the parameter must be omitted entirely for the
-/// General topic. Inbound messages in the General topic usually arrive with no
-/// thread id at all, so the General topic keeps the bare `telegram:{chat_id}`
-/// conversation key.
+/// Inbound messages in the General topic usually arrive with no thread id at
+/// all, so the General topic keeps the bare `telegram:{chat_id}` conversation
+/// key.
+///
+/// Send behavior differs by endpoint (verified live against the Bot API):
+/// * `sendMessage` and media sends **reject** an explicit `message_thread_id: 1`
+///   with `400 Bad Request: message thread not found`, so the parameter must be
+///   omitted entirely for the General topic on real sends.
+/// * `sendChatAction` **accepts** `message_thread_id: 1` with `ok: true`, yet a
+///   chat action sent with no thread id at all does not surface a typing
+///   indicator in the General topic of a forum. The thread id must therefore be
+///   supplied explicitly for chat actions, but omitted for sends.
+///
+/// See [`general_chat_action_thread_id`] for the General chat-action case.
 const GENERAL_TOPIC_ID: i32 = 1;
+
+/// Resolve the `message_thread_id` to use for a **chat action** in a forum.
+///
+/// `thread_id` is the topic resolved from the inbound message via
+/// [`TelegramAdapter::extract_thread_id`], which collapses the General topic to
+/// `None`. For a regular topic the id is returned unchanged. For the General
+/// topic of a *forum* chat the explicit id `1` is returned, because a chat
+/// action with no thread id does not render a typing indicator there.
+///
+/// `is_forum` guards the General case so non-forum chats (where thread id `1`
+/// is meaningless) continue to send the action with no thread target.
+///
+/// This is intentionally **chat-action only**: the equivalent ids must never be
+/// forwarded to `sendMessage`/media sends, which reject `message_thread_id: 1`.
+fn general_chat_action_thread_id(
+    thread_id: Option<ThreadId>,
+    is_forum: bool,
+) -> Option<ThreadId> {
+    match thread_id {
+        Some(topic_id) => Some(topic_id),
+        None if is_forum => Some(ThreadId(MessageId(GENERAL_TOPIC_ID))),
+        None => None,
+    }
+}
 
 /// Telegram Bot API method for sending rich messages (supports GFM pipe tables
 /// and other rich formatting via the `rich_message.markdown` field).
@@ -156,8 +189,11 @@ impl TelegramAdapter {
 
     /// Extract the forum topic (thread) id carried on an inbound message, if any.
     ///
-    /// The General topic is treated as "no topic" so that outbound sends keep
-    /// omitting `message_thread_id` (the Bot API rejects an explicit `1`).
+    /// The General topic is treated as "no topic" so that outbound *sends* keep
+    /// omitting `message_thread_id` (the Bot API rejects an explicit `1` on
+    /// `sendMessage`/media). Chat actions are the exception: see
+    /// [`general_chat_action_thread_id`], which re-adds id `1` for a forum's
+    /// General topic so the typing indicator actually renders.
     fn extract_thread_id(&self, message: &InboundMessage) -> Option<ThreadId> {
         message
             .metadata
@@ -166,6 +202,22 @@ impl TelegramAdapter {
             .map(|v| v as i32)
             .filter(|id| *id != GENERAL_TOPIC_ID)
             .map(|id| ThreadId(MessageId(id)))
+    }
+
+    /// Whether the originating chat is a forum (topics enabled).
+    ///
+    /// Recorded on the message metadata at ingress (`telegram_is_forum`); the
+    /// `send_status` chat-action path needs this to decide whether a `None`
+    /// thread id means "General topic of a forum" (send the action with
+    /// `message_thread_id: 1`) or "an ordinary non-forum chat" (send with no
+    /// thread target at all). Defaults to `false` when the metadata key is
+    /// absent, preserving the old non-forum behavior.
+    fn extract_is_forum(&self, message: &InboundMessage) -> bool {
+        message
+            .metadata
+            .get("telegram_is_forum")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     async fn stop_typing(&self, conversation_id: &str) {
@@ -803,7 +855,15 @@ impl Messaging for TelegramAdapter {
         match status {
             StatusUpdate::Thinking => {
                 let chat_id = self.extract_chat_id(message)?;
-                let thread_id = self.extract_thread_id(message);
+                // Chat actions take the General-topic exception: `sendChatAction`
+                // accepts `message_thread_id: 1`, and only with it does the
+                // typing indicator render in a forum's General topic. This is
+                // deliberately separate from the send path's `extract_thread_id`
+                // (which stays `None` for General, because real sends reject `1`).
+                let thread_id = general_chat_action_thread_id(
+                    self.extract_thread_id(message),
+                    self.extract_is_forum(message),
+                );
                 let bot = self.bot.clone();
                 let conversation_id = message.conversation_id.clone();
 
@@ -1138,6 +1198,25 @@ fn build_metadata(
         "unknown"
     };
     metadata.insert("telegram_chat_type".into(), chat_type.into());
+    // Whether the chat has forum topics enabled. Only supergroups can be
+    // forums; the flag lives on `PublicChatSupergroup::is_forum`. Recorded so
+    // `send_status` can target the General topic for typing indicators.
+    let is_forum = match &message.chat.kind {
+        teloxide::types::ChatKind::Public(public)
+            if matches!(public.kind, teloxide::types::PublicChatKind::Supergroup(_)) =>
+        {
+            if let teloxide::types::PublicChatKind::Supergroup(sg) = &public.kind {
+                sg.is_forum
+            } else {
+                false
+            }
+        }
+        _ => false,
+    };
+    metadata.insert(
+        "telegram_is_forum".into(),
+        serde_json::Value::Bool(is_forum),
+    );
 
     if let Some(title) = &message.chat.title() {
         metadata.insert("telegram_chat_title".into(), (*title).into());
