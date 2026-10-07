@@ -86,10 +86,14 @@ RUN SPACEBOT_SKIP_FRONTEND_BUILD=1 cargo build --release --features metrics \
 #   apt libgtk-3-0 -> gtk-3 (provides so:libgtk-3.so.0; Wolfi has no `libgtk-3`),
 #   Xvfb -> xorg-server (provides cmd:Xvfb) + xvfb-run (provides cmd:xvfb-run,
 #   the wrapper script the browsers launch under).
-# Installs the Node toolchain (nodejs-22 + npm) ONLY so that `npm` and `npx` are
-# available for stdio MCP servers. The image deliberately does NOT bundle any
-# MCP server or the `nub`/`nubx` runner: servers are installed per-deploy by
-# pointing the config at `npx`/`npm` (e.g. command = "npx", args = ["-y", pkg]).
+# Node tooling comes from `nub` (https://nubjs.com) installed via its official
+# installer below -- NOT from apk. nub is a single self-contained binary that
+# embeds its own Node runtime (preload + vendored node_modules + native addon,
+# JIT-extracted to ~/.cache/nub on first run) and ships the `nubx` runner used
+# to launch stdio MCP servers from git specs (e.g. command = "nubx",
+# args = ["-y", "github:pyoif/browsee"]). nubx has its own git fetcher and runs
+# package `prepare` scripts, so it sidesteps npm's EALLOWGIT gate entirely --
+# which is why the image no longer installs nodejs/npm from the repo.
 # git is present for servers that shell out to it when resolving git specs.
 # xvfb + xorg-server let headed browsers (patchright/Chrome, camoufox) run under
 # a virtual display inside the container -- no headless fallback, which is
@@ -113,8 +117,13 @@ RUN apk add --no-cache \
     openssh-client \
     bash \
     git \
-    nodejs-22 \
-    npm \
+    gnutar \
+    gzip \
+    coreutils \
+    posix-libc-utils \
+    libatomic \
+    libstdc++ \
+    libgcc \
     gtk-3 \
     xorg-server \
     xvfb-run \
@@ -135,8 +144,22 @@ RUN apk add --no-cache \
     libxss \
     libxtst \
     libxfixes \
-    && npm cache clean --force \
-    && rm -rf /root/.npm /tmp/*
+    && rm -rf /tmp/*
+
+# Install nub (version manager + `nubx` runner) from the official installer.
+# Fixed install dir (NUB_INSTALL_DIR) so the path is deterministic. The
+# installer needs curl, tar (Wolfi: gnutar), gzip, coreutils (sha256sum) and
+# grep/sed/awk -- all present above. NUB_NO_MODIFY_PATH skips shell-profile
+# edits -- irrelevant in an image, and PATH is set explicitly below.
+# nub's bundled Node runtime (JIT-extracted to ~/.cache/nub on first run) links
+# libatomic.so.1 / libstdc++.so.6 / libgcc_s.so.1 -- installed above, or every
+# nub/nubx invocation dies at exec with exit 127.
+ENV NUB_INSTALL_DIR=/usr/local/nub
+ENV NUB_NO_MODIFY_PATH=1
+RUN curl -fsSL https://nubjs.com/install.sh | bash -s -- \
+    && /usr/local/nub/bin/nub --version
+
+ENV PATH="/usr/local/nub/bin:${PATH}"
 
 COPY --from=builder /usr/local/bin/spacebot /usr/local/bin/spacebot
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
