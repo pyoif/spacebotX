@@ -1362,14 +1362,16 @@ mod tests {
             "the every-turn status block must sit below the tool-secrets section"
         );
 
-        // And the status block is the last mapped block in the map order.
-        let last_block = segmented
+        // And the status block is the last injected block (only the template's
+        // own trailing prose, a `template:*` literal, may follow it).
+        let last_injected = segmented
             .blocks
-            .last()
-            .expect("the prompt maps at least one block");
+            .iter()
+            .rfind(|block| !block.id.starts_with("template:"))
+            .expect("at least one injected block");
         assert_eq!(
-            last_block.id, "status_text",
-            "status_text must be the final mapped block"
+            last_injected.id, "status_text",
+            "status_text must be the final injected block"
         );
     }
 
@@ -1406,13 +1408,18 @@ mod tests {
             "the per-turn transcript must sit below the static Rules section"
         );
 
-        let last_block = segmented
+        // No injected block may follow the transcript — only the template's own
+        // trailing prose (a `template:*` literal block) may. The transcript is
+        // the last volatile content, so a transcript change cannot truncate the
+        // stable prefix.
+        let last_injected = segmented
             .blocks
-            .last()
-            .expect("the prompt maps at least one block");
+            .iter()
+            .rfind(|block| !block.id.starts_with("template:"))
+            .expect("at least one injected block");
         assert_eq!(
-            last_block.id, "channel_transcript",
-            "channel_transcript must be the final mapped block"
+            last_injected.id, "channel_transcript",
+            "channel_transcript must be the final injected block"
         );
     }
 
