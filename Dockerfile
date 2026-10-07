@@ -83,10 +83,18 @@ RUN SPACEBOT_SKIP_FRONTEND_BUILD=1 cargo build --release --features metrics \
 #   libudev.so.1 has no apt equivalent in the original list, but Chromium
 #   (Chrome for Testing 153, build 1243) links against it and fails to start
 #   without it; Wolfi ships it as the `libudev` package (provides so:libudev.so.1).
-# Also installs the Node toolchain (nodejs-22 + npm) so that `nub`/`npm`/`npx`
-# are available for stdio MCP servers, plus git (shelled out to by `nubx` when
-# resolving `github:` specs) and libatomic (needed by nub's bundled Node
-# runtime). Bash is present for scripts with a bash shebang.
+#   apt libgtk-3-0 -> gtk-3 (provides so:libgtk-3.so.0; Wolfi has no `libgtk-3`),
+#   Xvfb -> xorg-server (provides cmd:Xvfb) + xvfb-run (provides cmd:xvfb-run,
+#   the wrapper script the browsers launch under).
+# Installs the Node toolchain (nodejs-22 + npm) ONLY so that `npm` and `npx` are
+# available for stdio MCP servers. The image deliberately does NOT bundle any
+# MCP server or the `nub`/`nubx` runner: servers are installed per-deploy by
+# pointing the config at `npx`/`npm` (e.g. command = "npx", args = ["-y", pkg]).
+# git is present for servers that shell out to it when resolving git specs.
+# xvfb + xorg-server let headed browsers (patchright/Chrome, camoufox) run under
+# a virtual display inside the container -- no headless fallback, which is
+# fingerprintable. gtk-3 is the toolkit Chrome links against on Linux.
+# Bash is present for scripts with a bash shebang.
 FROM cgr.dev/chainguard/wolfi-base:latest
 
 # Chrome runtime dependencies below are required whether Chrome is
@@ -105,9 +113,11 @@ RUN apk add --no-cache \
     openssh-client \
     bash \
     git \
-    libatomic \
     nodejs-22 \
     npm \
+    gtk-3 \
+    xorg-server \
+    xvfb-run \
     font-liberation \
     libnss \
     libudev \
@@ -125,7 +135,6 @@ RUN apk add --no-cache \
     libxss \
     libxtst \
     libxfixes \
-    && npm install -g nub \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/*
 
