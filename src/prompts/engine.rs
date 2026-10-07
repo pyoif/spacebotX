@@ -1332,6 +1332,73 @@ mod tests {
         assert_tiles(&segmented);
     }
 
+    /// R1/R2/R5: the cached prefix is stable-first, volatile-last. Identity,
+    /// capabilities and the skills index sit far above the per-turn state, and
+    /// the status block — which changes every turn and is therefore the wrong
+    /// thing to anchor a shared prefix on — is now the last template section,
+    /// below the memory store. Accumulated history (chronicle, backfill) stays
+    /// where it is; the runtime time line is appended after all of this by the
+    /// call site, so nothing the template emits follows the status block.
+    #[test]
+    fn volatile_blocks_render_after_stable_blocks() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+
+        let segmented = engine
+            .render_channel_prompt(ChannelPromptInputs {
+                identity_context: Some("# Orion\n\nI work for Jamie.".to_string()),
+                knowledge_synthesis: Some("## Memory Store\n\nScope: global".to_string()),
+                skills_prompt: Some("## Available Skills\n\n- deploy".to_string()),
+                worker_capabilities: "## Worker Types\n\nBuiltin only.".to_string(),
+                status_text: Some("No active processes.".to_string()),
+                session_chronicle: Some("## Chronicle\n\nEarlier today.".to_string()),
+                backfill_transcript: Some("[]".to_string()),
+                ..base_inputs(&engine)
+            })
+            .expect("segmented render");
+
+        let position = |needle: &str| -> Option<usize> {
+            segmented
+                .blocks
+                .iter()
+                .position(|block| block.id == needle)
+        };
+
+        let identity = position("identity_context").expect("identity block present");
+        let capabilities = position("worker_capabilities").expect("capabilities block present");
+        let memory = position("knowledge_synthesis").expect("memory block present");
+        let status = position("status_text").expect("status block present");
+        let chronicle = position("session_chronicle").expect("chronicle block present");
+
+        assert!(
+            identity < capabilities && capabilities < memory,
+            "stable identity/capability blocks must precede the semi-volatile memory store: {identity} {capabilities} {memory}"
+        );
+        assert!(
+            memory < status,
+            "the memory store must precede the volatile status block: {memory} {status}"
+        );
+        // The status block changes every turn, so it is the very last template
+        // section — below the accumulated history (chronicle, backfill), which
+        // are append-only and therefore stable within a turn. Anchoring the
+        // cacheable prefix on the accretions (not on the per-turn status block)
+        // is the whole point of R1.
+        assert!(
+            chronicle < status,
+            "the accumulated chronicle must precede the every-turn status block: {chronicle} {status}"
+        );
+
+        // Nothing the template emits may follow the status block except the
+        // accumulated history sections — in particular the time line is not a
+        // template block at all.
+        assert!(
+            !segmented
+                .blocks
+                .iter()
+                .any(|block| block.id == "current_time_line"),
+            "the wall-clock line is appended by the call site, not the template"
+        );
+    }
+
     #[test]
     fn appended_sections_extend_the_map() {
         let engine = PromptEngine::new("en").expect("prompt engine should build");

@@ -216,6 +216,9 @@ fn classify(name: &str) -> (BlockLayer, BlockStability, BlockSource) {
         "active_goals" => (Runtime, Volatile, Store),
         "conversation_context" => (Runtime, Epoch, LiveState),
         "status_text" => (Runtime, Volatile, LiveState),
+        // R5: the wall-clock line is the last block of the system prompt and
+        // changes every second — always Volatile, always Runtime.
+        "current_time_line" => (Runtime, Volatile, LiveState),
         "tool_use_enforcement" => (Contract, Epoch, Config),
         "required_skills" => (Capabilities, Epoch, Config),
         "agents_manifest" | "runtime_config_snapshot" => (Capabilities, Epoch, Config),

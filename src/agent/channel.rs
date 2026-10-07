@@ -3350,9 +3350,11 @@ impl Channel {
             )?
         };
 
-        // Time no longer renders here — it rides on the current user message
-        // envelope instead, so this prompt stays byte-stable across turns
-        // (see `with_time_envelope`).
+        // Time is intentionally NOT rendered into the status block — that
+        // would put a per-second-changing line above cacheable bytes. It is
+        // rendered as the very last block of the system prompt instead
+        // (R5: no per-turn time in the stable region — it lives in the volatile
+        // tail), and also rides the user envelope below.
         let system_info = self.build_system_info().await;
         let registry_workers = self
             .state
@@ -3444,6 +3446,17 @@ impl Channel {
                 &model_name,
             )?,
             "tool_use_enforcement",
+        );
+
+        // R5: the wall-clock line is the LAST block of the system prompt —
+        // appended after every cacheable block (including tool enforcement)
+        // so it can never truncate a stable prefix. It changes every second,
+        // and R5 forbids per-turn time anywhere in the stable region.
+        let current_time_line =
+            TemporalContext::from_runtime(self.deps.runtime_config.as_ref()).current_time_line();
+        segmented.append_section(
+            "current_time_line",
+            &format!("## Current Date and Time\n\n{current_time_line}"),
         );
 
         self.chronicler.fence().record_prompt_tokens(

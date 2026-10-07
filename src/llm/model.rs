@@ -29,6 +29,27 @@ use tokio::sync::Mutex;
 
 const STREAM_REQUEST_TIMEOUT_SECS: u64 = 30 * 60;
 
+/// R4: return the request's tool definitions in a deterministic, name-sorted
+/// order.
+///
+/// Tool definitions are part of the cached prompt prefix, and providers match a
+/// byte-identical prefix. Rig assembles the tool array from an insertion-ordered
+/// list whose contents shift as conditional tools are registered and removed
+/// around each turn, so serializing it verbatim lets an unrelated registration
+/// change silently reshuffle the array and invalidate the whole cached prefix.
+/// Sorting by name makes the bytes a pure function of the tool *set* — conditional
+/// churn only perturbs the bytes when the set genuinely changed.
+///
+/// Ties are impossible in practice (tool names are unique), and the sort is
+/// stable so equal-named entries keep their relative order.
+pub(crate) fn stable_tool_definitions(
+    tools: &[rig::completion::ToolDefinition],
+) -> Vec<&rig::completion::ToolDefinition> {
+    let mut ordered: Vec<&rig::completion::ToolDefinition> = tools.iter().collect();
+    ordered.sort_by(|a, b| a.name.cmp(&b.name));
+    ordered
+}
+
 /// Raw provider response. Wraps the JSON so Rig can carry it through.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawResponse {
@@ -1461,9 +1482,8 @@ impl SpacebotModel {
         }
 
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
+            let tools: Vec<serde_json::Value> = stable_tool_definitions(&request.tools)
+                .into_iter()
                 .map(|t| {
                     serde_json::json!({
                         "type": "function",
@@ -1571,9 +1591,8 @@ impl SpacebotModel {
         }
 
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
+            let tools: Vec<serde_json::Value> = stable_tool_definitions(&request.tools)
+                .into_iter()
                 .map(|tool_definition| {
                     serde_json::json!({
                         "type": "function",
@@ -1696,9 +1715,8 @@ impl SpacebotModel {
         }
 
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
+            let tools: Vec<serde_json::Value> = stable_tool_definitions(&request.tools)
+                .into_iter()
                 .map(|tool_definition| {
                     serde_json::json!({
                         "type": "function",
@@ -2011,9 +2029,8 @@ impl SpacebotModel {
         }
 
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
+            let tools: Vec<serde_json::Value> = stable_tool_definitions(&request.tools)
+                .into_iter()
                 .map(|t| {
                     serde_json::json!({
                         "type": "function",
@@ -2108,9 +2125,8 @@ impl SpacebotModel {
         }
 
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request
-                .tools
-                .iter()
+            let tools: Vec<serde_json::Value> = stable_tool_definitions(&request.tools)
+                .into_iter()
                 .map(|t| {
                     serde_json::json!({
                         "type": "function",
@@ -4636,6 +4652,46 @@ mod tests {
         let error = parse_anthropic_response(body).expect_err("should fail");
         assert!(matches!(error, CompletionError::ResponseError(_)));
         assert!(error.to_string().contains("stop_reason: max_tokens"));
+    }
+
+    /// R4: tool definitions must serialize in a deterministic, name-sorted
+    /// order regardless of the order rig assembled them in, so conditional
+    /// registration churn cannot silently reshuffle the cached tool prefix.
+    #[test]
+    fn tool_definitions_are_sorted_by_name_for_stable_serialization() {
+        let make = |name: &str| rig::completion::ToolDefinition {
+            name: name.to_string(),
+            description: format!("{name} description"),
+            parameters: serde_json::json!({ "type": "object" }),
+        };
+
+        let assembled = vec![
+            make("zebra"),
+            make("alpha"),
+            make("middle"),
+            make("beta"),
+        ];
+
+        let ordered: Vec<String> = stable_tool_definitions(&assembled)
+            .into_iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+
+        assert_eq!(ordered, ["alpha", "beta", "middle", "zebra"]);
+
+        // A different input order must yield the same output order — this is
+        // the property the cache depends on.
+        let shuffled = vec![
+            make("middle"),
+            make("zebra"),
+            make("beta"),
+            make("alpha"),
+        ];
+        let ordered_again: Vec<String> = stable_tool_definitions(&shuffled)
+            .into_iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+        assert_eq!(ordered, ordered_again);
     }
 
     fn request_with(chat_history: Vec<Message>, preamble: Option<&str>) -> CompletionRequest {

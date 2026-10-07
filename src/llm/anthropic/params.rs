@@ -3,6 +3,7 @@
 use super::auth::{self, AnthropicAuthPath};
 use super::cache;
 use super::tools;
+use crate::llm::model::stable_tool_definitions;
 
 use reqwest::RequestBuilder;
 use rig::completion::CompletionRequest;
@@ -162,14 +163,18 @@ fn build_tools(
         return Vec::new();
     }
 
-    let original_tools: Vec<(String, String)> = request
-        .tools
+    // R4: deterministic tool order. The Anthropic tools breakpoint sits on the
+    // LAST tool definition, so an unstable array order moves the breakpoint and
+    // invalidates the cached tools prefix — sorting by name keeps it fixed.
+    let ordered_tools = stable_tool_definitions(&request.tools);
+
+    let original_tools: Vec<(String, String)> = ordered_tools
         .iter()
         .map(|t| (t.name.clone(), t.description.clone()))
         .collect();
 
-    let tool_values: Vec<serde_json::Value> = request
-        .tools
+    let last_index = ordered_tools.len() - 1;
+    let tool_values: Vec<serde_json::Value> = ordered_tools
         .iter()
         .enumerate()
         .map(|(index, t)| {
@@ -186,7 +191,7 @@ fn build_tools(
             });
 
             // Attach cache_control to the last tool definition
-            if index == request.tools.len() - 1
+            if index == last_index
                 && let Some(cc) = cache_control
             {
                 tool["cache_control"] = cc.clone();
