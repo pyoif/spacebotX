@@ -80,6 +80,9 @@ RUN SPACEBOT_SKIP_FRONTEND_BUILD=1 cargo build --release --features metrics \
 #   libdrm2 -> libdrm-libs, libasound2 -> alsa-lib, libpango-1.0-0 -> pango,
 #   libcairo2 -> cairo, libcups2 -> cups-libs, libnss3 -> libnss,
 #   fonts-liberation -> font-liberation, gh -> gh.
+#   libudev.so.1 has no apt equivalent in the original list, but Chromium
+#   (Chrome for Testing 153, build 1243) links against it and fails to start
+#   without it; Wolfi ships it as the `libudev` package (provides so:libudev.so.1).
 # Also installs the Node toolchain (nodejs-22 + npm) so that `nub`/`npm`/`npx`
 # are available for stdio MCP servers, plus git (shelled out to by `nubx` when
 # resolving `github:` specs) and libatomic (needed by nub's bundled Node
@@ -107,6 +110,7 @@ RUN apk add --no-cache \
     npm \
     font-liberation \
     libnss \
+    libudev \
     libatk-bridge-2.0 \
     libdrm-libs \
     libxcomposite \
