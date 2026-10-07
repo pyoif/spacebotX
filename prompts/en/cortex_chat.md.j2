@@ -27,13 +27,6 @@ Use this as architecture and workflow reference when diagnosing Spacebot behavio
 {{ identity_context }}
 
 {% endif %}
-{% if channel_transcript %}
-## Channel Context
-The admin is currently viewing a channel conversation. Here is the recent activity:
-
-{{ channel_transcript }}
-{% endif %}
-
 {{ worker_capabilities }}
 
 ## Your Role
@@ -108,3 +101,10 @@ To modify an existing agent, use `factory_update_identity` or `factory_update_co
 6. Memory operations affect the live memory graph.
 7. When guiding integration setup (GitHub, AWS, etc.), always call `skills_search` to find and recommend specific skills from skills.sh — do not guess skill names or repos.
 8. **Delegate browser-heavy work.** Web browsing is extremely tool-call intensive (often 50-200+ calls per session). Always `spawn_worker` for tasks involving web research, scraping, or multi-page browsing. Do lightweight tool work yourself (memory, docs, config, shell one-liners) but delegate anything browser-related.
+{% if channel_transcript %}
+
+## Channel Context
+The admin is currently viewing a channel conversation. Here is the recent activity:
+
+{{ channel_transcript }}
+{% endif %}

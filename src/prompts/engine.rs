@@ -1313,6 +1313,109 @@ mod tests {
         assert_tiles(&segmented);
     }
 
+    /// R1 for the worker prompt: the per-turn status block is the last thing in
+    /// the prompt, below the static Rules and tool-secrets sections. It used to
+    /// sit mid-prompt above Rules, which truncated the cacheable prefix at its
+    /// bytes on every turn.
+    #[test]
+    fn worker_prompt_places_status_after_static_sections() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+
+        let segmented = engine
+            .render_worker_prompt(
+                "/instance",
+                "/workspace",
+                true,
+                true,
+                vec!["/workspace".to_string()],
+                vec!["/workspace/out".to_string()],
+                &["OPENAI_API_KEY".to_string()],
+                false,
+                Some("## Current Status\n\nNo active processes.".to_string()),
+                true,
+                None,
+            )
+            .expect("worker prompt should render");
+
+        // The static Rules block and the tool-secrets section are literal prose
+        // in the template, so they are template bytes, not injected blocks. The
+        // status block is injected and must land after them in the text.
+        let status_at = segmented
+            .text
+            .find("No active processes.")
+            .expect("status block present in text");
+        let rules_at = segmented
+            .text
+            .find("## Rules")
+            .expect("Rules section present in text");
+        let secrets_at = segmented
+            .text
+            .find("## Available Tool Secrets")
+            .expect("tool secrets section present in text");
+
+        assert!(
+            rules_at < status_at,
+            "the every-turn status block must sit below the static Rules section"
+        );
+        assert!(
+            secrets_at < status_at,
+            "the every-turn status block must sit below the tool-secrets section"
+        );
+
+        // And the status block is the last mapped block in the map order.
+        let last_block = segmented
+            .blocks
+            .last()
+            .expect("the prompt maps at least one block");
+        assert_eq!(
+            last_block.id, "status_text",
+            "status_text must be the final mapped block"
+        );
+    }
+
+    /// R1 for the cortex chat prompt: the per-turn channel transcript is the
+    /// last content in the prompt, below the static role/guidance prose, so a
+    /// transcript change cannot truncate the stable prefix.
+    #[test]
+    fn cortex_chat_prompt_places_transcript_last() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+
+        let segmented = engine
+            .render_cortex_chat_prompt(
+                Some("# Orion".to_string()),
+                Some("## Channel Context\n\nuser: hello".to_string()),
+                Some("# AGENTS".to_string()),
+                Some("- change".to_string()),
+                Some("{}".to_string()),
+                "## Worker Types\n\nBuiltin only.".to_string(),
+                false,
+            )
+            .expect("cortex chat prompt should render");
+
+        let transcript_at = segmented
+            .text
+            .find("user: hello")
+            .expect("transcript present in text");
+        let rules_at = segmented
+            .text
+            .find("## Rules")
+            .expect("Rules section present in text");
+
+        assert!(
+            rules_at < transcript_at,
+            "the per-turn transcript must sit below the static Rules section"
+        );
+
+        let last_block = segmented
+            .blocks
+            .last()
+            .expect("the prompt maps at least one block");
+        assert_eq!(
+            last_block.id, "channel_transcript",
+            "channel_transcript must be the final mapped block"
+        );
+    }
+
     /// A prompt with no injected values is one block covering all of it —
     /// which is what the inspector should say, rather than reporting it as
     /// unmapped.

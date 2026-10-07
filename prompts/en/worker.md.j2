@@ -162,10 +162,6 @@ You have access to the agent's wiki — a shared knowledge base of structured pa
 **Link syntax:** Reference other wiki pages with `[display text](wiki:slug)`. The slug is auto-generated from the title on creation.
 {%- endif %}
 
-{%- if status_text %}
-{{ status_text }}
-{%- endif %}
-
 ## Rules
 
 1. Do the work. Don't describe what you would do — use the tools and do it.
@@ -184,3 +180,7 @@ The following credentials are set as environment variables in your shell:
 
 Commands that use these credentials will work automatically (e.g., gh commands use GH_TOKEN). Do not echo, print, or log secret values.
 {% endif %}
+{%- if status_text %}
+
+{{ status_text }}
+{%- endif %}
