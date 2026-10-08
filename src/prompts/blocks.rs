@@ -211,7 +211,13 @@ fn classify(name: &str) -> (BlockLayer, BlockStability, BlockSource) {
         "working_memory" => (Working, Volatile, Synthesis),
         "channel_activity_map" => (Working, Volatile, Store),
         "participant_context" => (Working, Volatile, Store),
-        "session_chronicle" => (Working, Volatile, Synthesis),
+        // The chronicle is the channel prompt's cache anchor: it is append-only
+        // within a session and rolls over only on a named event, so it belongs
+        // in the cached prefix, not in the per-turn volatile region. Classified
+        // Epoch (changes only on a named event) rather than Volatile — the
+        // Volatile label is what previously allowed it to be emitted below the
+        // per-turn blocks and lose its role as the prefix boundary.
+        "session_chronicle" => (Working, Epoch, Synthesis),
         "backfill_transcript" => (Working, Epoch, Store),
         "active_goals" => (Runtime, Volatile, Store),
         "conversation_context" => (Runtime, Epoch, LiveState),

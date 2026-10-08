@@ -1462,6 +1462,11 @@ mod tests {
                 status_text: Some("No active processes.".to_string()),
                 session_chronicle: Some("## Chronicle\n\nEarlier today.".to_string()),
                 backfill_transcript: Some("[]".to_string()),
+                working_memory: Some("## Working Memory\n\nNothing yet.".to_string()),
+                channel_activity_map: Some("## Channel Activity\n\nQuiet.".to_string()),
+                participant_context: Some("## Participants\n\nJamie.".to_string()),
+                active_goals: Some("## Goals\n\nShip it.".to_string()),
+                conversation_context: Some("Platform: telegram".to_string()),
                 ..base_inputs(&engine)
             })
             .expect("segmented render");
@@ -1478,15 +1483,57 @@ mod tests {
         let memory = position("knowledge_synthesis").expect("memory block present");
         let status = position("status_text").expect("status block present");
         let chronicle = position("session_chronicle").expect("chronicle block present");
+        let backfill = position("backfill_transcript").expect("backfill block present");
+        let working_memory = position("working_memory").expect("working memory block present");
+        let activity_map =
+            position("channel_activity_map").expect("activity map block present");
+        let participants =
+            position("participant_context").expect("participant block present");
+        let goals = position("active_goals").expect("goals block present");
+        let conversation =
+            position("conversation_context").expect("conversation context block present");
 
         assert!(
             identity < capabilities && capabilities < memory,
             "stable identity/capability blocks must precede the semi-volatile memory store: {identity} {capabilities} {memory}"
         );
+
+        // The chunk that changes every turn must sit BELOW the append-only
+        // accretions. The chronicle is the cache anchor: a provider caches the
+        // longest byte-identical prefix, so a per-turn block above it truncates
+        // the shared prefix at that block's bytes and the entire history below
+        // re-tokenizes every turn. This is the assertion that catches that
+        // regression — the emitted order, not just the classification.
+        //
+        // The chronicle sits as high as possible, above the semi-volatile
+        // memory store: it is the longest and fastest-growing append-only
+        // region, so every byte below it stays cached only while it remains
+        // the earliest mutable block.
         assert!(
-            memory < status,
-            "the memory store must precede the volatile status block: {memory} {status}"
+            chronicle < memory,
+            "the append-only chronicle must precede the semi-volatile memory store, so the longest accreted region anchors the prefix: {chronicle} {memory}"
         );
+        assert!(
+            chronicle < backfill,
+            "the chronicle must precede the backfill transcript (both append-only, chronicle first): {chronicle} {backfill}"
+        );
+        for (name, pos) in [
+            ("working_memory", working_memory),
+            ("channel_activity_map", activity_map),
+            ("participant_context", participants),
+            ("active_goals", goals),
+            ("conversation_context", conversation),
+        ] {
+            assert!(
+                backfill < pos,
+                "per-turn block `{name}` must render below the append-only history (backfill={backfill}, {name}={pos}) — a volatile block above the chronicle truncates the cacheable prefix at its bytes"
+            );
+            assert!(
+                pos < status,
+                "per-turn block `{name}` must render above the every-turn status block: {name}={pos} status={status}"
+            );
+        }
+
         // The status block changes every turn, so it is the very last template
         // section — below the accumulated history (chronicle, backfill), which
         // are append-only and therefore stable within a turn. Anchoring the
