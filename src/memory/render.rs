@@ -9,7 +9,7 @@
 //! anywhere in this path. See `docs/design-docs/memory-first-knowledge-context.md`.
 
 use crate::memory::{MemoryStore, MemoryType};
-use crate::tasks::{CreateTaskInput, TaskListFilter, TaskPriority, TaskStatus, TaskStore};
+use crate::tasks::{TaskListFilter, TaskStatus, TaskStore};
 use anyhow::{Context, Result};
 
 /// Typed sections in render order, with per-type entry caps sized for the
@@ -175,6 +175,7 @@ fn first_line(content: &str) -> &str {
 mod tests {
     use super::*;
     use crate::memory::Memory;
+    use crate::tasks::{CreateTaskInput, TaskPriority};
 
     #[test]
     fn first_line_skips_blank_lines() {
