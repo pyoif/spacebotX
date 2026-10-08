@@ -3164,9 +3164,14 @@ impl Channel {
             .ok()
     }
 
-    async fn render_memory_layers(&self) -> (String, String, String, Option<String>, Option<String>) {
+    /// Render the semi-volatile memory layers that stay in the system prompt.
+    ///
+    /// Returns `(channel_activity_map, participant_context,
+    /// knowledge_synthesis_text, active_tasks_text)`. Working memory is NOT
+    /// here — R2 moved it to the volatile epilogue appended after history.
+    async fn render_memory_layers(&self) -> (String, String, Option<String>, Option<String>) {
         if matches!(self.resolved_settings.memory, MemoryMode::Off) {
-            return (String::new(), String::new(), String::new(), None, None);
+            return (String::new(), String::new(), None, None);
         }
 
         let rc = &self.deps.runtime_config;
@@ -3190,21 +3195,6 @@ impl Channel {
         };
         let wm_config = **rc.working_memory.load();
         let timezone = self.deps.working_memory.timezone();
-
-        let working_memory = match crate::memory::working::render_working_memory(
-            &self.deps.working_memory,
-            self.id.as_ref(),
-            &wm_config,
-            timezone,
-        )
-        .await
-        {
-            Ok(text) => text,
-            Err(error) => {
-                tracing::warn!(channel_id = %self.id, %error, "working memory render failed");
-                String::new()
-            }
-        };
 
         let channel_activity_map = match crate::memory::working::render_channel_activity_map(
             &self.deps.sqlite_pool,
@@ -3266,7 +3256,6 @@ impl Channel {
         };
 
         (
-            working_memory,
             channel_activity_map,
             participant_context,
             knowledge_synthesis_text,
@@ -3330,6 +3319,12 @@ impl Channel {
 
     /// Build the channel's system prompt along with the map of the blocks it
     /// is assembled from.
+    ///
+    /// This returns the STABLE system prompt only (R2): the per-turn volatile
+    /// content — the status block and the wall-clock line — is returned
+    /// separately from [`Self::build_volatile_epilogue`] and appended after the
+    /// conversation history at send time, so these bytes stay identical across
+    /// turns and hold the full provider prefix cache.
     pub async fn build_system_prompt_segmented(
         &self,
     ) -> crate::error::Result<crate::prompts::SegmentedPrompt> {
@@ -3367,27 +3362,11 @@ impl Channel {
             )?
         };
 
-        // Time is intentionally NOT rendered into the status block — that
-        // would put a per-second-changing line above cacheable bytes. It is
-        // rendered as the very last block of the system prompt instead
-        // (R5: no per-turn time in the stable region — it lives in the volatile
-        // tail), and also rides the user envelope below.
-        let system_info = self.build_system_info().await;
-        let registry_workers = self
-            .state
-            .deps
-            .process_control_registry
-            .list_worker_snapshots()
-            .await
-            .into_iter()
-            .filter(|worker| worker.provenance.origin_channel_id.as_ref() == Some(&self.id))
-            .collect();
-        let status_text = {
-            let mut status = self.state.status_block.write().await;
-            status.replace_workers_from_registry(registry_workers);
-            status.render_with_context(None, Some(&system_info))
-        };
-
+        // R2: the status block and the wall-clock line are NOT rendered into the
+        // system prompt. They change every turn / every second, so they would
+        // truncate the cached prefix at their bytes. They are returned by
+        // `build_volatile_epilogue` and appended AFTER the conversation history
+        // at send time, keeping this prompt byte-identical across turns.
         let available_channels = self.build_available_channels().await;
 
         let org_context = self.build_org_context(&prompt_engine);
@@ -3402,7 +3381,6 @@ impl Channel {
         let project_context = self.build_project_context(&prompt_engine).await;
 
         let (
-            working_memory,
             channel_activity_map,
             participant_context,
             knowledge_synthesis_text,
@@ -3444,7 +3422,7 @@ impl Channel {
                 skills_prompt: empty_to_none(skills_prompt),
                 worker_capabilities,
                 conversation_context: self.conversation_context.clone(),
-                status_text: empty_to_none(status_text),
+                status_text: None,
                 available_channels,
                 agent_links: self.send_agent_message_tool.is_some(),
                 org_context,
@@ -3452,7 +3430,10 @@ impl Channel {
                 project_context,
                 backfill_transcript: self.backfill_transcript.clone(),
                 session_chronicle: self.render_session_chronicle().await,
-                working_memory: empty_to_none(working_memory),
+                // R2: working memory is per-turn volatile content. It is NOT
+                // rendered into the cached system prompt; `build_volatile_epilogue`
+                // appends it after the conversation history at send time.
+                working_memory: None,
                 channel_activity_map: empty_to_none(channel_activity_map),
                 participant_context: empty_to_none(participant_context),
                 active_goals,
@@ -3471,21 +3452,100 @@ impl Channel {
             "tool_use_enforcement",
         );
 
-        // R5: the wall-clock line is the LAST block of the system prompt —
-        // appended after every cacheable block (including tool enforcement)
-        // so it can never truncate a stable prefix. It changes every second,
-        // and R5 forbids per-turn time anywhere in the stable region.
-        let current_time_line =
-            TemporalContext::from_runtime(self.deps.runtime_config.as_ref()).current_time_line();
-        segmented.append_section(
-            "current_time_line",
-            &format!("## Current Date and Time\n\n{current_time_line}"),
-        );
-
         self.chronicler.fence().record_prompt_tokens(
             crate::agent::compactor::estimate_text_tokens(&segmented.text),
         );
         Ok(segmented)
+    }
+
+    /// R2: the per-turn volatile epilogue — the status block and the wall-clock
+    /// line.
+    ///
+    /// These change every turn (status) or every second (time), so they must
+    /// NOT live inside the cached system prompt. The caller attaches this to the
+    /// model via `with_volatile_epilogue`, which appends it as a system message
+    /// after the conversation history: it lands at the tail of the request and
+    /// never rewrites the bytes above it, keeping the system prompt's prefix
+    /// cache intact. Returns `None` when both halves are empty.
+    pub(crate) async fn build_volatile_epilogue(&self) -> crate::error::Result<Option<String>> {
+        let status_text = self.render_status_block().await;
+        let working_memory = self.render_working_memory_block().await;
+        let current_time_line =
+            TemporalContext::from_runtime(self.deps.runtime_config.as_ref()).current_time_line();
+
+        let mut epilogue = String::new();
+        if !working_memory.is_empty() {
+            epilogue.push_str(&working_memory);
+        }
+        if let Some(status_text) = status_text.filter(|text| !text.is_empty()) {
+            if !epilogue.is_empty() {
+                epilogue.push_str("\n\n");
+            }
+            epilogue.push_str("## Current Status\n\n");
+            epilogue.push_str(
+                "The status block is operational awareness — your running processes and their \
+                 unrelayed results. It is not content to narrate, and a result already delivered \
+                 never gets re-relayed from here.\n\n",
+            );
+            epilogue.push_str(&status_text);
+        }
+        if !current_time_line.is_empty() {
+            if !epilogue.is_empty() {
+                epilogue.push_str("\n\n");
+            }
+            epilogue.push_str("## Current Date and Time\n\n");
+            epilogue.push_str(&current_time_line);
+        }
+
+        Ok((!epilogue.is_empty()).then_some(epilogue))
+    }
+
+    /// Render the working-memory block for the volatile epilogue.
+    ///
+    /// R2: working memory changes every turn, so it must not sit in the cached
+    /// system prompt. It renders here and is appended after the conversation
+    /// history at send time, never rewriting the prompt's bytes.
+    async fn render_working_memory_block(&self) -> String {
+        let rc = &self.deps.runtime_config;
+        let wm_config = **rc.working_memory.load();
+        let timezone = self.deps.working_memory.timezone();
+        match crate::memory::working::render_working_memory(
+            &self.deps.working_memory,
+            self.id.as_ref(),
+            &wm_config,
+            timezone,
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!(channel_id = %self.id, %error, "working memory render failed");
+                String::new()
+            }
+        }
+    }
+
+    /// Render the status block from the current process registry and system info.
+    ///
+    /// Extracted so the volatile epilogue can render it independently of the
+    /// stable system prompt.
+    async fn render_status_block(&self) -> Option<String> {
+        let system_info = self.build_system_info().await;
+        let registry_workers = self
+            .state
+            .deps
+            .process_control_registry
+            .list_worker_snapshots()
+            .await
+            .into_iter()
+            .filter(|worker| worker.provenance.origin_channel_id.as_ref() == Some(&self.id))
+            .collect();
+        let status_text = {
+            let mut status = self.state.status_block.write().await;
+            status.replace_workers_from_registry(registry_workers);
+            status.render_with_context(None, Some(&system_info))
+        };
+        (!status_text.is_empty()).then_some(status_text)
     }
 
     /// Register per-turn tools, run the LLM agentic loop, and clean up.
@@ -3654,6 +3714,13 @@ impl Channel {
                     blocks: system_prompt.blocks.clone(),
                 },
             );
+
+        // R2: build the per-turn volatile epilogue (status + wall-clock) and
+        // attach it to the model. It is appended after the conversation history
+        // at send time, so the system prompt above stays byte-identical across
+        // turns and keeps its provider prefix cache.
+        let volatile_epilogue = self.build_volatile_epilogue().await?;
+        let model = model.with_volatile_epilogue(volatile_epilogue);
 
         let agent = AgentBuilder::new(model)
             .preamble(&system_prompt.text)

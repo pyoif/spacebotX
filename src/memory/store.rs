@@ -475,6 +475,48 @@ impl MemoryStore {
         Ok(rows.into_iter().map(|row| row_to_memory(&row)).collect())
     }
 
+    /// Get memories by type in strict insertion order (oldest first), capped at
+    /// the `limit` most recent entries.
+    ///
+    /// This is the render-order accessor for the R3 append-only memory store.
+    /// The inner query takes the newest `limit` rows (so a cap drops the
+    /// OLDEST entries off the front of the block, never a mid-block entry),
+    /// and the outer query re-sorts that window oldest-first so one appended
+    /// memory adds bytes at the END and leaves every earlier byte identical.
+    /// `created_at`, not `importance`, is the ordering key — importance can be
+    /// edited after insert, which would move an existing entry and shift bytes
+    /// after it.
+    pub async fn get_by_type_append_only(
+        &self,
+        memory_type: MemoryType,
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        let type_str = memory_type.to_string();
+
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM (
+                SELECT id, content, memory_type, importance, created_at, updated_at,
+                       last_accessed_at, access_count, source, channel_id, forgotten,
+                       supersedes_checkpoint_id
+                FROM memories
+                WHERE memory_type = ? AND forgotten = 0
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            ) ORDER BY created_at ASC, id ASC
+            "#,
+        )
+        .bind(&type_str)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| {
+            format!("failed to get memories by type {:?} in insertion order", memory_type)
+        })?;
+
+        Ok(rows.into_iter().map(|row| row_to_memory(&row)).collect())
+    }
+
     /// Count memories of a type (excluding forgotten ones), for the
     /// shown-of-total counts in the deterministic memory-store render.
     pub async fn count_by_type(&self, memory_type: MemoryType) -> Result<i64> {

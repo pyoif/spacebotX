@@ -86,6 +86,13 @@ pub struct SpacebotModel {
     usage_accumulator: Option<Arc<Mutex<crate::llm::usage::UsageAccumulator>>>,
     record_store: Option<Arc<crate::llm::record::PromptRecordStore>>,
     debug_context: Option<Arc<crate::llm::record::DebugContext>>,
+    /// R2: per-turn volatile content (status block, wall-clock line) that must
+    /// NOT sit inside the cached system prompt. When set, it is injected as a
+    /// system message appended AFTER the conversation history — content that
+    /// lands at the tail of the request and never rewrites the bytes above it,
+    /// so the system prompt stays byte-identical across turns and keeps its full
+    /// provider prefix cache.
+    volatile_epilogue: Option<String>,
 }
 
 /// Share of the ceiling held back for the model's own response.
@@ -200,6 +207,41 @@ impl SpacebotModel {
         self.record_store = store;
         self.debug_context = Some(Arc::new(context));
         self
+    }
+
+    /// R2: attach per-turn volatile content to be appended after the history.
+    ///
+    /// The status block and the wall-clock line change every turn, so they must
+    /// not live inside the cached system prompt. Carrying them here lets every
+    /// provider receive them as a system message appended AFTER the last history
+    /// message — content at the tail of the request that never rewrites the
+    /// bytes above it. The system prompt then stays byte-identical across turns
+    /// and holds its full provider prefix cache.
+    pub fn with_volatile_epilogue(mut self, epilogue: Option<String>) -> Self {
+        self.volatile_epilogue = epilogue.map(|text| text).filter(|text| !text.is_empty());
+        self
+    }
+
+    /// Append the volatile epilogue as a trailing system message.
+    ///
+    /// Runs in the pre-send path, after history repair and before the ceiling
+    /// check, so the epilogue is measured against the window like any other
+    /// message and reaches every provider through the same `chat_history` it
+    /// already converts. The message sits after the last real turn — it is
+    /// context for the CURRENT turn, and because it is appended (never spliced
+    /// into the middle) the bytes of every earlier message are untouched.
+    fn inject_volatile_epilogue(&self, request: &mut CompletionRequest) {
+        let Some(epilogue) = self.volatile_epilogue.as_deref() else {
+            return;
+        };
+
+        match append_post_history_note(&request.chat_history, epilogue) {
+            Some(history) => request.chat_history = history,
+            None => tracing::warn!(
+                model = %self.full_model_name,
+                "volatile epilogue dropped: history could not carry the appended message"
+            ),
+        }
     }
 
     /// The store to record into, when capture is on.
@@ -353,6 +395,27 @@ fn split_system_prompt(request: &CompletionRequest) -> (String, Vec<&rig::messag
     }
 
     (request.preamble.clone().unwrap_or_default(), messages)
+}
+
+/// R2: append per-turn volatile content after the conversation history.
+///
+/// Returns the history with `text` added as a trailing system message, or
+/// `None` when the result would be empty (only possible for a truly empty
+/// history, which cannot occur for a real turn). The appended message lands
+/// last in the request — after every prior turn — so it never rewrites an
+/// earlier byte and the cached prompt prefix above it stays intact. All
+/// provider converters render a trailing `System` message as a final
+/// user/system turn, so the epilogue reaches every provider through the same
+/// one code path.
+fn append_post_history_note(
+    history: &OneOrMany<rig::message::Message>,
+    text: &str,
+) -> Option<OneOrMany<rig::message::Message>> {
+    let mut messages: Vec<rig::message::Message> = history.iter().cloned().collect();
+    messages.push(rig::message::Message::System {
+        content: text.to_string(),
+    });
+    OneOrMany::many(messages).ok()
 }
 
 /// True when a block map describes exactly the given preamble.
@@ -979,6 +1042,7 @@ impl CompletionModel for SpacebotModel {
             usage_accumulator: None,
             record_store: None,
             debug_context: None,
+            volatile_epilogue: None,
         }
     }
 
@@ -990,6 +1054,10 @@ impl CompletionModel for SpacebotModel {
         let start = std::time::Instant::now();
 
         self.repair_request_history(&mut request)?;
+        // R2: append the volatile status/time epilogue after the history so it
+        // never sits in the cached system prompt. Done before the ceiling check
+        // so the window accounts for it.
+        self.inject_volatile_epilogue(&mut request);
 
         // Only the clock is taken up front. The request is recorded after the
         // escalation below, which may rewrite and re-send it — the record has
@@ -1169,6 +1237,9 @@ impl CompletionModel for SpacebotModel {
         mut request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
         self.repair_request_history(&mut request)?;
+        // R2: append the volatile status/time epilogue after the history (see
+        // `inject_volatile_epilogue`) before the ceiling check.
+        self.inject_volatile_epilogue(&mut request);
         // Streaming has no fallback chain, so this model is the one that
         // receives the request and the one a refusal belongs to.
         let sent_tokens = self.enforce_context_ceiling(&mut request);
@@ -4824,6 +4895,47 @@ mod tests {
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "user");
         assert_eq!(converted[0]["content"], "You are a helpful assistant");
+    }
+
+    /// R2: the volatile epilogue is appended AFTER the conversation history, so
+    /// it is the last message a provider sees and never rewrites an earlier
+    /// byte. Both converters render it as a trailing turn.
+    #[test]
+    fn post_history_note_appends_after_prior_turns() {
+        let history = OneOrMany::many(vec![
+            Message::System {
+                content: "stable preamble".to_string(),
+            },
+            Message::User {
+                content: OneOrMany::one(UserContent::text("hello")),
+            },
+            Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::text("hi")),
+            },
+        ])
+        .expect("history");
+
+        let extended = append_post_history_note(&history, "## Current Status\n\nidle")
+            .expect("appended history");
+
+        // One message more than before, and the prior turns convert to exactly
+        // the same bytes — the appended note cannot have shifted them.
+        let before_openai = convert_messages_to_openai(&history, false);
+        let after_openai = convert_messages_to_openai(&extended, false);
+        assert_eq!(after_openai.len(), before_openai.len() + 1);
+        assert_eq!(&after_openai[..before_openai.len()], &before_openai[..]);
+
+        // The note is last for both providers.
+        let last_openai = after_openai.last().expect("openai last message");
+        assert_eq!(last_openai["content"], "## Current Status\n\nidle");
+
+        let after_anthropic = convert_messages_to_anthropic(&extended);
+        let last_anthropic = after_anthropic.last().expect("anthropic last message");
+        assert_eq!(last_anthropic["content"], "## Current Status\n\nidle");
+
+        // And the leading byte content (the cached anchor) is untouched.
+        assert_eq!(after_openai[0]["content"], "stable preamble");
     }
 
     #[test]

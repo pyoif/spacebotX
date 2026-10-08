@@ -42,6 +42,11 @@ const BASELINE_BUDGET_WORDS: usize = 500;
 /// branch recall into the full store is worth it. When the word budget
 /// exhausts mid-render, the render stops — no section header is ever emitted
 /// without at least one entry under it.
+///
+/// R3 strict append-only: entries render oldest-first in insertion order and a
+/// new memory lands at the END of its section, so the block's earlier bytes are
+/// a stable prefix across writes. The block is byte-identical between writes
+/// and only grows when a memory is actually written.
 pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Result<String> {
     let mut output = String::from("## Memory Store\n\nScope: global\n");
     let mut word_budget = max_words;
@@ -60,17 +65,18 @@ pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Resul
         // math against the baseline, at least one entry per section.
         let entry_cap = (baseline_cap * max_words / BASELINE_BUDGET_WORDS).max(1);
 
-        let mut entries = store.get_by_type(*memory_type, entry_cap as i64).await?;
-        // Stable ordering: importance desc, then updated_at desc, then id —
-        // byte-identical between store writes even when SQLite's natural
-        // ordering does not tie-break identically.
-        entries.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.updated_at.cmp(&a.updated_at))
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        let entries = store
+            .get_by_type_append_only(*memory_type, entry_cap as i64)
+            .await?;
+        // Strict append-only ordering (R3): entries render oldest-first in
+        // insertion order, so a new memory adds bytes at the END of the block
+        // and every earlier byte stays identical — the block keeps a stable,
+        // growing cacheable prefix. No importance/updated_at re-sort here:
+        // re-sorting could move an existing entry and shift the bytes after it,
+        // truncating the prefix cache even though nothing before it changed.
+        // The cap drops the OLDEST entries off the front (see
+        // `get_by_type_append_only`), which is the only eviction that preserves
+        // prefix stability.
 
         // Render entries against the remaining budget before emitting the
         // header, so the shown-of-total count reflects what actually
@@ -349,5 +355,74 @@ mod tests {
 
         assert!(!rendered.contains("People"));
         assert!(!rendered.contains("Victor prefers direct answers"));
+    }
+
+    /// R3 strict append-only: after a memory is written, the previously
+    /// rendered bytes must remain a PREFIX of the new render. A new entry
+    /// appends at the end of its section and shifts nothing before it, so the
+    /// block's cacheable prefix grows instead of being truncated.
+    #[tokio::test]
+    async fn new_memory_appends_and_preserves_prior_bytes_as_a_prefix() {
+        let (store, _task_store) = render_fixture().await;
+        save_three_word_memory(&store, MemoryType::Fact, "alpha fact one", 0.5).await;
+        save_three_word_memory(&store, MemoryType::Fact, "bravo fact two", 0.9).await;
+
+        let before = render_memory_store(&store, 500).await.unwrap();
+
+        // A new memory — deliberately HIGHER importance than everything already
+        // present. Under the old importance-sorted render this would insert
+        // mid-block and shift the existing bytes; append-only ordering must
+        // leave the prior bytes untouched and append at the end.
+        save_three_word_memory(&store, MemoryType::Fact, "charlie fact three", 1.0).await;
+
+        let after = render_memory_store(&store, 500).await.unwrap();
+
+        assert!(
+            after.starts_with(&before),
+            "prior memory-store bytes must remain an exact prefix after a write\nbefore: {before:?}\nafter:  {after:?}"
+        );
+        assert!(
+            after.contains("- charlie fact three ("),
+            "the new memory must render at the end of the block\nafter: {after:?}"
+        );
+        // The new entry lands at the tail: nothing after it but its own date
+        // suffix and the block's trailing newline.
+        let charlie_line = after
+            .rfind("- charlie fact three (")
+            .expect("charlie line present");
+        let tail = &after[charlie_line..];
+        assert!(
+            tail.trim_end().ends_with(')'),
+            "nothing renders after the newest entry: {tail:?}"
+        );
+        // The insertion order is preserved regardless of importance.
+        let alpha = after.find("alpha fact one").expect("alpha present");
+        let charlie = after.find("charlie fact three").expect("charlie present");
+        assert!(alpha < charlie, "entries render oldest-first, not by importance");
+    }
+
+    /// Eviction drops the OLDEST entries off the front of the block, so the
+    /// surviving entries are the newest and their bytes stay a suffix of the
+    /// larger render.
+    #[tokio::test]
+    async fn cap_eviction_drops_the_oldest_entries_off_the_front() {
+        let (store, _task_store) = render_fixture().await;
+        for index in 0..12 {
+            save_three_word_memory(
+                &store,
+                MemoryType::Fact,
+                &format!("fact number {index:02}"),
+                0.5,
+            )
+            .await;
+        }
+
+        // Baseline cap is 10 of 12: the two oldest (00, 01) fall off the front,
+        // the newest 10 render.
+        let rendered = render_memory_store(&store, 500).await.unwrap();
+        assert!(rendered.contains("### Facts — 10 of 12"));
+        assert!(!rendered.contains("fact number 00"));
+        assert!(!rendered.contains("fact number 01"));
+        assert!(rendered.contains("fact number 11"));
     }
 }
