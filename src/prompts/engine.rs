@@ -107,6 +107,7 @@ pub struct ChannelPromptInputs {
     pub channel_activity_map: Option<String>,
     pub participant_context: Option<String>,
     pub active_goals: Option<String>,
+    pub active_tasks: Option<String>,
     pub execution_mode: String,
     pub authority: String,
     pub autonomy_channel: bool,
@@ -131,6 +132,7 @@ impl ChannelPromptInputs {
             .text("channel_activity_map", self.channel_activity_map)
             .text("participant_context", self.participant_context)
             .text("active_goals", self.active_goals)
+            .text("active_tasks", self.active_tasks)
             .text("execution_mode", Some(self.execution_mode))
             .text("authority", Some(self.authority))
             .inline("autonomy_channel", self.autonomy_channel)
@@ -1224,6 +1226,7 @@ mod tests {
             channel_activity_map: Some("## Channel Activity\n\nQuiet.".to_string()),
             participant_context: Some("## Participants\n\nJamie.".to_string()),
             active_goals: Some("## Goals\n\nShip it.".to_string()),
+            active_tasks: Some("## Active Tasks\n\n- #1".to_string()),
             ..base_inputs(&engine)
         };
 
@@ -1466,6 +1469,7 @@ mod tests {
                 channel_activity_map: Some("## Channel Activity\n\nQuiet.".to_string()),
                 participant_context: Some("## Participants\n\nJamie.".to_string()),
                 active_goals: Some("## Goals\n\nShip it.".to_string()),
+                active_tasks: Some("## Active Tasks\n\n- #1".to_string()),
                 conversation_context: Some("Platform: telegram".to_string()),
                 ..base_inputs(&engine)
             })
@@ -1490,6 +1494,7 @@ mod tests {
         let participants =
             position("participant_context").expect("participant block present");
         let goals = position("active_goals").expect("goals block present");
+        let tasks = position("active_tasks").expect("active tasks block present");
         let conversation =
             position("conversation_context").expect("conversation context block present");
 
@@ -1522,6 +1527,7 @@ mod tests {
             ("channel_activity_map", activity_map),
             ("participant_context", participants),
             ("active_goals", goals),
+            ("active_tasks", tasks),
             ("conversation_context", conversation),
         ] {
             assert!(

@@ -3164,9 +3164,9 @@ impl Channel {
             .ok()
     }
 
-    async fn render_memory_layers(&self) -> (String, String, String, Option<String>) {
+    async fn render_memory_layers(&self) -> (String, String, String, Option<String>, Option<String>) {
         if matches!(self.resolved_settings.memory, MemoryMode::Off) {
-            return (String::new(), String::new(), String::new(), None);
+            return (String::new(), String::new(), String::new(), None, None);
         }
 
         let rc = &self.deps.runtime_config;
@@ -3176,8 +3176,6 @@ impl Channel {
             let cortex_config = **rc.cortex.load();
             match crate::memory::render::render_memory_store(
                 self.deps.memory_search.store(),
-                &self.deps.task_store,
-                &self.deps.agent_id,
                 cortex_config.memory_render_max_words,
             )
             .await
@@ -3249,11 +3247,30 @@ impl Channel {
             }
         };
 
+        // The active-task board is rendered separately from the memory-store
+        // block: task transitions churn independently of memory writes, and
+        // gluing them together truncated the memory block's cacheable prefix
+        // every time a task moved. It rides with the per-turn volatile blocks.
+        let active_tasks_text = match crate::memory::render::render_active_tasks(
+            &self.deps.task_store,
+            &self.deps.agent_id,
+        )
+        .await
+        {
+            Ok(text) if !text.is_empty() => Some(text),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(channel_id = %self.id, %error, "active tasks render failed");
+                None
+            }
+        };
+
         (
             working_memory,
             channel_activity_map,
             participant_context,
             knowledge_synthesis_text,
+            active_tasks_text,
         )
     }
 
@@ -3384,8 +3401,13 @@ impl Channel {
 
         let project_context = self.build_project_context(&prompt_engine).await;
 
-        let (working_memory, channel_activity_map, participant_context, knowledge_synthesis_text) =
-            self.render_memory_layers().await;
+        let (
+            working_memory,
+            channel_activity_map,
+            participant_context,
+            knowledge_synthesis_text,
+            active_tasks_text,
+        ) = self.render_memory_layers().await;
 
         let active_goals = self.render_active_goals().await;
 
@@ -3434,6 +3456,7 @@ impl Channel {
                 channel_activity_map: empty_to_none(channel_activity_map),
                 participant_context: empty_to_none(participant_context),
                 active_goals,
+                active_tasks: active_tasks_text,
                 execution_mode,
                 authority,
                 autonomy_channel: self.state.kind == ChannelKind::Autonomy,

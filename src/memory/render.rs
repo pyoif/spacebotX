@@ -3,7 +3,9 @@
 //!
 //! Replaces read-time LLM knowledge synthesis: the render is a pure function
 //! of the store, so identical store state produces identical bytes — a memory
-//! write is the only thing that changes the block. No LLM call exists
+//! write is the only thing that changes the block. The task board is rendered
+//! as a separate block (`render_active_tasks`) so its independent churn does
+//! not dilute this block's cache anchor. No LLM call exists
 //! anywhere in this path. See `docs/design-docs/memory-first-knowledge-context.md`.
 
 use crate::memory::{MemoryStore, MemoryType};
@@ -32,19 +34,15 @@ const BASELINE_BUDGET_WORDS: usize = 500;
 
 /// Render the global memory-store view for the knowledge-context slot.
 ///
-/// `max_words` caps the memory sections; the Active Tasks section always
-/// renders regardless — task-awareness is a standing signal, and an empty
-/// board is itself information. Shown-of-total counts report what was
+/// `max_words` caps the memory sections. The active-task board is rendered
+/// separately ([`render_active_tasks`]) as its own prompt block, so this block's
+/// change frequency is exactly "a memory was written" — it no longer shifts when
+/// the task board does. Shown-of-total counts report what was
 /// actually rendered against what the store holds, so the model knows when
 /// branch recall into the full store is worth it. When the word budget
 /// exhausts mid-render, the render stops — no section header is ever emitted
 /// without at least one entry under it.
-pub async fn render_memory_store(
-    store: &MemoryStore,
-    task_store: &TaskStore,
-    agent_id: &str,
-    max_words: usize,
-) -> Result<String> {
+pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Result<String> {
     let mut output = String::from("## Memory Store\n\nScope: global\n");
     let mut word_budget = max_words;
 
@@ -112,12 +110,19 @@ pub async fn render_memory_store(
         }
     }
 
-    output.push_str(&render_active_tasks(task_store, agent_id).await?);
     Ok(output)
 }
 
+/// The active-task board for this agent, as a standalone section.
+///
+/// Rendered separately from [`render_memory_store`] so the memory-store block's
+/// change frequency is exactly "a memory was written": the task board changes on
+/// task transitions, which are frequent and independent of memory writes. Gluing
+/// the two together made the semi-volatile memory block change whenever the board
+/// did, truncating the cacheable prefix far more often than its content required.
+///
 /// Non-done tasks assigned to this agent, as a standing section.
-async fn render_active_tasks(task_store: &TaskStore, agent_id: &str) -> Result<String> {
+pub async fn render_active_tasks(task_store: &TaskStore, agent_id: &str) -> Result<String> {
     let mut all_tasks = Vec::new();
     for status in &[
         TaskStatus::InProgress,
@@ -235,7 +240,7 @@ mod tests {
         // A 150-word budget keeps the Facts entry cap at 3 but only fits two
         // 60-word bullets; the third fact and the whole Decisions section do
         // not render.
-        let rendered = render_memory_store(&store, &task_store, "agent", 150)
+        let rendered = render_memory_store(&store, 150)
             .await
             .unwrap();
 
@@ -247,7 +252,46 @@ mod tests {
             !rendered.contains("### Decisions"),
             "an exhausted budget must not emit further section headers"
         );
-        assert!(rendered.contains("### Active Tasks"));
+        assert!(
+            !rendered.contains("### Active Tasks"),
+            "the task board is a separate block now, not part of the memory-store render"
+        );
+    }
+
+    /// The task board is its own block: the memory-store render must NOT carry
+    /// it (so the memory block's cacheable prefix survives task churn), and
+    /// `render_active_tasks` must carry it independently.
+    #[tokio::test]
+    async fn active_tasks_are_split_out_of_the_memory_store_render() {
+        let (store, task_store) = render_fixture().await;
+        save_three_word_memory(&store, MemoryType::Fact, "alpha fact one", 0.9).await;
+
+        task_store
+            .create(CreateTaskInput {
+                owner_agent_id: "agent".to_string(),
+                assigned_agent_id: Some("agent".to_string()),
+                title: "Ship the cache fix".to_string(),
+                status: TaskStatus::InProgress,
+                priority: TaskPriority::Medium,
+                created_by: "agent".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("task create");
+
+        let memory = render_memory_store(&store, 500).await.unwrap();
+        assert!(
+            !memory.contains("Active Tasks") && !memory.contains("Ship the cache fix"),
+            "the memory-store render must not embed the task board"
+        );
+
+        let tasks = render_active_tasks(&task_store, "agent").await.unwrap();
+        assert!(tasks.contains("## Active Tasks"));
+        assert!(tasks.contains("Ship the cache fix"));
+
+        // A different agent's board is empty for this render.
+        let other = render_active_tasks(&task_store, "someone-else").await.unwrap();
+        assert!(other.contains("No active tasks."));
     }
 
     #[tokio::test]
@@ -256,7 +300,7 @@ mod tests {
         save_three_word_memory(&store, MemoryType::Fact, "alpha fact one", 0.9).await;
         save_three_word_memory(&store, MemoryType::Fact, "bravo fact two", 0.8).await;
 
-        let rendered = render_memory_store(&store, &task_store, "agent", 500)
+        let rendered = render_memory_store(&store, 500)
             .await
             .unwrap();
 
@@ -278,13 +322,13 @@ mod tests {
         }
 
         // At the baseline budget the Facts cap is 10 of the 12 stored.
-        let baseline = render_memory_store(&store, &task_store, "agent", 500)
+        let baseline = render_memory_store(&store, 500)
             .await
             .unwrap();
         assert!(baseline.contains("### Facts — 10 of 12"));
 
         // Doubling the budget doubles the cap, so every entry renders.
-        let doubled = render_memory_store(&store, &task_store, "agent", 1000)
+        let doubled = render_memory_store(&store, 1000)
             .await
             .unwrap();
         assert!(doubled.contains("### Facts\n"));
@@ -298,7 +342,7 @@ mod tests {
             Memory::new("Victor prefers direct answers", MemoryType::Human).with_importance(1.0);
         store.save(&anchor).await.unwrap();
 
-        let rendered = render_memory_store(&store, &task_store, "agent", 500)
+        let rendered = render_memory_store(&store, 500)
             .await
             .unwrap();
 

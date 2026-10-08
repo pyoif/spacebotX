@@ -220,6 +220,11 @@ fn classify(name: &str) -> (BlockLayer, BlockStability, BlockSource) {
         "session_chronicle" => (Working, Epoch, Synthesis),
         "backfill_transcript" => (Working, Epoch, Store),
         "active_goals" => (Runtime, Volatile, Store),
+        // The task board changes on task transitions, which are frequent and
+        // independent of memory writes. It is its own block (split out of the
+        // memory-store render) so the semi-volatile memory block's cacheable
+        // prefix is not truncated whenever a task moves.
+        "active_tasks" => (Runtime, Volatile, Store),
         "conversation_context" => (Runtime, Epoch, LiveState),
         "status_text" => (Runtime, Volatile, LiveState),
         // R5: the wall-clock line is the last block of the system prompt and

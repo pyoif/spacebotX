@@ -849,8 +849,6 @@ async fn append_worker_memory_context(
     let cortex_config = **deps.runtime_config.cortex.load();
     match crate::memory::render::render_memory_store(
         deps.memory_search.store(),
-        &deps.task_store,
-        &deps.agent_id,
         cortex_config.memory_render_max_words,
     )
     .await
@@ -860,6 +858,17 @@ async fn append_worker_memory_context(
         }
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, "worker ambient memory store render failed"),
+    }
+
+    // The task board is its own block: task transitions churn independently of
+    // memory writes, and keeping them in the memory block truncated its
+    // cacheable prefix on every task move.
+    match crate::memory::render::render_active_tasks(&deps.task_store, &deps.agent_id).await {
+        Ok(active_tasks) if !active_tasks.is_empty() => {
+            system_prompt.append_section("active_tasks", &active_tasks);
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "worker ambient active tasks render failed"),
     }
 
     let Some(channel_id) = channel_id else {
