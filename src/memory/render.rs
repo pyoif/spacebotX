@@ -9,7 +9,7 @@
 //! anywhere in this path. See `docs/design-docs/memory-first-knowledge-context.md`.
 
 use crate::memory::{MemoryStore, MemoryType};
-use crate::tasks::{TaskListFilter, TaskStatus, TaskStore};
+use crate::tasks::{CreateTaskInput, TaskListFilter, TaskPriority, TaskStatus, TaskStore};
 use anyhow::{Context, Result};
 
 /// Typed sections in render order, with per-type entry caps sized for the
@@ -225,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn exhausted_budget_stops_render_without_empty_headers() {
-        let (store, task_store) = render_fixture().await;
+        let (store, _task_store) = render_fixture().await;
         for (prefix, importance) in [
             ("alpha fact", 0.9),
             ("bravo fact", 0.8),
@@ -296,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn count_is_omitted_when_every_entry_renders() {
-        let (store, task_store) = render_fixture().await;
+        let (store, _task_store) = render_fixture().await;
         save_three_word_memory(&store, MemoryType::Fact, "alpha fact one", 0.9).await;
         save_three_word_memory(&store, MemoryType::Fact, "bravo fact two", 0.8).await;
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn per_type_caps_scale_with_the_configured_budget() {
-        let (store, task_store) = render_fixture().await;
+        let (store, _task_store) = render_fixture().await;
         for index in 0..12 {
             save_three_word_memory(
                 &store,
@@ -337,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn human_anchors_are_excluded_from_the_global_render() {
-        let (store, task_store) = render_fixture().await;
+        let (store, _task_store) = render_fixture().await;
         let anchor =
             Memory::new("Victor prefers direct answers", MemoryType::Human).with_importance(1.0);
         store.save(&anchor).await.unwrap();
