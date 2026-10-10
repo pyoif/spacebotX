@@ -479,13 +479,19 @@ impl MemoryStore {
     /// the `limit` most recent entries.
     ///
     /// This is the render-order accessor for the R3 append-only memory store.
-    /// The inner query takes the newest `limit` rows (so a cap drops the
+    /// The inner query takes the newest `limit` rows (so eviction drops the
     /// OLDEST entries off the front of the block, never a mid-block entry),
     /// and the outer query re-sorts that window oldest-first so one appended
     /// memory adds bytes at the END and leaves every earlier byte identical.
     /// `created_at`, not `importance`, is the ordering key — importance can be
     /// edited after insert, which would move an existing entry and shift bytes
     /// after it.
+    ///
+    /// The caller passes the *eviction window* as `limit`, not the raw cap:
+    /// [`watermark_eviction_window`] turns a per-type cap into a window that
+    /// only advances its front in whole batches, so passing `entry_cap`
+    /// directly would reintroduce the per-write shave that batched eviction
+    /// exists to avoid.
     pub async fn get_by_type_append_only(
         &self,
         memory_type: MemoryType,
@@ -686,6 +692,47 @@ impl MemoryStore {
             agent_id: String::new(),
         })
     }
+}
+
+/// Fraction of a per-type render cap that a section is trimmed back to when a
+/// write crosses the cap. Batched watermark eviction drops the front down to
+/// this level in a single event instead of shaving one entry per write, so the
+/// deep, cache-invalidating eviction happens rarely and its cost is amortized
+/// across the append headroom the watermark leaves (~20% of the cap).
+const EVICTION_WATERMARK_PERCENT: i64 = 80;
+
+/// The batched watermark eviction window: how many of the newest entries a
+/// section holding `total` memories under a per-type `cap` should render.
+///
+/// A plain `min(total, cap)` window drops the oldest entry on every write once
+/// the cap is reached, so it re-truncates the block's cacheable prefix on each
+/// write (a drip). This window instead advances its front only in whole
+/// batches: it grows one entry per write until the next write would push it
+/// past `cap`, then drops the front straight back to the watermark (~80% of
+/// `cap`) in ONE eviction event. The window therefore always sits in
+/// `[watermark, cap]`, so it is append-only between evictions — each write adds
+/// one entry at the END and leaves every earlier byte identical — and each
+/// eviction removes ~20% of the cap at once rather than one entry at a time.
+///
+/// The result is a pure function of `total` and `cap`: the boundary advances
+/// only when a write changes the stored total, so no eviction cursor needs to
+/// be persisted and a re-render never moves it.
+pub fn watermark_eviction_window(total: i64, cap: i64) -> i64 {
+    let cap = cap.max(1);
+    if total <= cap {
+        return total.max(0);
+    }
+    // The front never drops below one entry, and always keeps headroom
+    // (`watermark < cap`) so every eviction batch is non-empty and makes
+    // progress.
+    let watermark = (cap * EVICTION_WATERMARK_PERCENT / 100).clamp(1, cap);
+    // Entries dropped per eviction event: the headroom between the watermark
+    // and the cap, plus one, so the window lands exactly back on the watermark.
+    let batch = cap + 1 - watermark;
+    // Advance the front in whole batches only; the residue is the append-only
+    // growth (one entry per write) since the last eviction.
+    let dropped = batch * ((total - watermark) / batch);
+    total - dropped
 }
 
 /// Load a memory by ID inside an open transaction.
@@ -1067,5 +1114,46 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, visible.id);
+    }
+
+    /// Batched watermark eviction: when the window crosses the cap it jumps
+    /// back to the watermark in one batch, then grows one entry per write, so
+    /// it is append-only between evictions and evicts ~20% of the cap at once
+    /// rather than one entry per write.
+    #[test]
+    fn watermark_eviction_window_batches_the_front_drop() {
+        // Facts cap (10) → watermark 8: at the cap every entry renders, and the
+        // write that crosses it drops the front straight to the watermark.
+        assert_eq!(watermark_eviction_window(10, 10), 10);
+        assert_eq!(watermark_eviction_window(11, 10), 8);
+        // The window then grows one entry per write (append-only) until the
+        // next batched eviction…
+        assert_eq!(watermark_eviction_window(12, 10), 9);
+        assert_eq!(watermark_eviction_window(13, 10), 10);
+        // …and evicts as a batch again, never a single-entry shave.
+        assert_eq!(watermark_eviction_window(14, 10), 8);
+        assert_eq!(watermark_eviction_window(16, 10), 10);
+        assert_eq!(watermark_eviction_window(17, 10), 8);
+
+        // The window never leaves the [watermark, cap] band, for any total.
+        for total in 11..=500 {
+            let window = watermark_eviction_window(total, 10);
+            assert!(
+                (8..=10).contains(&window),
+                "window {window} left the [8, 10] band at total {total}"
+            );
+        }
+
+        // The Observations cap (8) → watermark 6.
+        assert_eq!(watermark_eviction_window(8, 8), 8);
+        assert_eq!(watermark_eviction_window(9, 8), 6);
+        assert_eq!(watermark_eviction_window(12, 8), 6);
+
+        // Degenerate caps stay valid: the window is always at least one entry.
+        assert_eq!(watermark_eviction_window(1, 1), 1);
+        assert_eq!(watermark_eviction_window(9, 1), 1);
+        assert_eq!(watermark_eviction_window(2, 2), 2);
+        assert_eq!(watermark_eviction_window(3, 2), 1);
+        assert_eq!(watermark_eviction_window(4, 2), 2);
     }
 }

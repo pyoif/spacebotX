@@ -46,7 +46,10 @@ const BASELINE_BUDGET_WORDS: usize = 500;
 /// R3 strict append-only: entries render oldest-first in insertion order and a
 /// new memory lands at the END of its section, so the block's earlier bytes are
 /// a stable prefix across writes. The block is byte-identical between writes
-/// and only grows when a memory is actually written.
+/// and only grows when a memory is actually written. When a section outgrows
+/// its cap, the front is evicted as a single batched watermark drop
+/// (`crate::memory::store::watermark_eviction_window`), so the
+/// cache-invalidating truncation is rare and amortized.
 pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Result<String> {
     let mut output = String::from("## Memory Store\n\nScope: global\n");
     let mut word_budget = max_words;
@@ -65,8 +68,17 @@ pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Resul
         // math against the baseline, at least one entry per section.
         let entry_cap = (baseline_cap * max_words / BASELINE_BUDGET_WORDS).max(1);
 
+        // Batched watermark eviction: once a section holds more than `entry_cap`
+        // memories, the front drops back to the eviction watermark (~80% of the
+        // cap) in ONE batch, instead of the oldest entry falling off on every
+        // write. That keeps the append-only window in [watermark, cap] and
+        // amortizes the cache-invalidating eviction across the resulting append
+        // headroom, so a deep prefix-truncating miss is rare instead of a drip.
+        // See `crate::memory::store::watermark_eviction_window`.
+        let window = crate::memory::store::watermark_eviction_window(total, entry_cap as i64);
+
         let entries = store
-            .get_by_type_append_only(*memory_type, entry_cap as i64)
+            .get_by_type_append_only(*memory_type, window)
             .await?;
         // Strict append-only ordering (R3): entries render oldest-first in
         // insertion order, so a new memory adds bytes at the END of the block
@@ -74,9 +86,10 @@ pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Resul
         // growing cacheable prefix. No importance/updated_at re-sort here:
         // re-sorting could move an existing entry and shift the bytes after it,
         // truncating the prefix cache even though nothing before it changed.
-        // The cap drops the OLDEST entries off the front (see
-        // `get_by_type_append_only`), which is the only eviction that preserves
-        // prefix stability.
+        // Eviction drops the OLDEST entries off the front and only ever as a
+        // whole batch (see `watermark_eviction_window`), which is the only
+        // eviction that preserves prefix stability — and batching it keeps that
+        // truncation rare instead of a per-write shave.
 
         // Render entries against the remaining budget before emitting the
         // header, so the shown-of-total count reflects what actually
@@ -328,11 +341,13 @@ mod tests {
             .await;
         }
 
-        // At the baseline budget the Facts cap is 10 of the 12 stored.
+        // At the baseline budget the Facts cap is 10; with 12 stored, batched
+        // watermark eviction has already trimmed the front, so 9 of the 12
+        // render (the window band is [8, 10]).
         let baseline = render_memory_store(&store, 500)
             .await
             .unwrap();
-        assert!(baseline.contains("### Facts — 10 of 12"));
+        assert!(baseline.contains("### Facts — 9 of 12"));
 
         // Doubling the budget doubles the cap, so every entry renders.
         let doubled = render_memory_store(&store, 1000)
@@ -403,7 +418,8 @@ mod tests {
 
     /// Eviction drops the OLDEST entries off the front of the block, so the
     /// surviving entries are the newest and their bytes stay a suffix of the
-    /// larger render.
+    /// larger render. Under batched watermark eviction the front drops in whole
+    /// batches, so 12 stored against a cap of 10 leaves the window at 9.
     #[tokio::test]
     async fn cap_eviction_drops_the_oldest_entries_off_the_front() {
         let (store, _task_store) = render_fixture().await;
@@ -417,12 +433,74 @@ mod tests {
             .await;
         }
 
-        // Baseline cap is 10 of 12: the two oldest (00, 01) fall off the front,
-        // the newest 10 render.
+        // Baseline cap is 10; batched eviction has dropped the three oldest
+        // (00, 01, 02) off the front in one batch, so the newest 9 render.
         let rendered = render_memory_store(&store, 500).await.unwrap();
-        assert!(rendered.contains("### Facts — 10 of 12"));
+        assert!(rendered.contains("### Facts — 9 of 12"));
         assert!(!rendered.contains("fact number 00"));
         assert!(!rendered.contains("fact number 01"));
+        assert!(!rendered.contains("fact number 02"));
+        assert!(rendered.contains("fact number 03"));
         assert!(rendered.contains("fact number 11"));
+    }
+
+    /// Batched watermark eviction: the write that CROSSES the cap drops the
+    /// front straight back to the watermark in one batch, instead of shaving
+    /// the single oldest entry. That is what amortizes the deep,
+    /// cache-invalidating truncation: one eviction buys the append headroom
+    /// from the watermark back to the cap.
+    #[tokio::test]
+    async fn cap_cross_evicts_a_batch_down_to_the_watermark() {
+        let (store, _task_store) = render_fixture().await;
+
+        // Fill exactly to the Facts cap (10): nothing is evicted yet, so every
+        // entry renders and the shown-of-total count is omitted.
+        for index in 0..10 {
+            save_three_word_memory(
+                &store,
+                MemoryType::Fact,
+                &format!("fact number {index:02}"),
+                0.5,
+            )
+            .await;
+        }
+        let at_cap = render_memory_store(&store, 500).await.unwrap();
+        assert!(at_cap.contains("fact number 00"), "at the cap: {at_cap}");
+        assert!(at_cap.contains("fact number 09"));
+        assert!(
+            !at_cap.contains("### Facts —"),
+            "all 10 of 10 render at the cap: {at_cap}"
+        );
+
+        // The first write PAST the cap evicts a batch: the front drops from 10
+        // straight to the 8-entry watermark, so three entries go at once — not
+        // the one entry a plain min(total, cap) window would drop.
+        save_three_word_memory(&store, MemoryType::Fact, "fact number 10", 0.5).await;
+        let past_cap = render_memory_store(&store, 500).await.unwrap();
+        assert!(
+            past_cap.contains("### Facts — 8 of 11"),
+            "crossing the cap must drop to the watermark in one batch: {past_cap}"
+        );
+        for evicted in ["fact number 00", "fact number 01", "fact number 02"] {
+            assert!(
+                !past_cap.contains(evicted),
+                "{evicted} should have been batch-evicted: {past_cap}"
+            );
+        }
+        assert!(past_cap.contains("fact number 03"));
+        assert!(
+            past_cap.contains("fact number 10"),
+            "the newest memory renders at the tail: {past_cap}"
+        );
+
+        // The window then grows one entry per write (append-only) until the next
+        // batched eviction, so the block keeps a stable growing prefix.
+        save_three_word_memory(&store, MemoryType::Fact, "fact number 11", 0.5).await;
+        let grown = render_memory_store(&store, 500).await.unwrap();
+        assert!(grown.contains("### Facts — 9 of 12"), "{grown}");
+        assert!(
+            grown.contains("fact number 03"),
+            "the window only ever grows between evictions: {grown}"
+        );
     }
 }
