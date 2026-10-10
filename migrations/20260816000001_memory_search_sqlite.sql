@@ -92,22 +92,41 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     tokenize = "unicode61 tokenchars '_-.'"
 );
 
-CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
+-- The `WHEN new.search_text <> ''` guard is not an optimisation. FTS5 never
+-- stores a document with no tokens, so a row whose `search_text` is empty is
+-- absent from the index; issuing `'delete'` for a row the index has never seen
+-- corrupts it (`database disk image is malformed`, reproduced on SQLite 3.53.1).
+-- Every statement below is therefore guarded on the half it touches.
+CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories
+WHEN new.search_text <> '' BEGIN
     INSERT INTO memories_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
+CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories
+WHEN old.search_text <> '' BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, search_text)
     VALUES ('delete', old.rowid, old.search_text);
 END;
 
--- Fires for every UPDATE on `memories`, not only ones touching `search_text`.
--- That is intentional and matches the wiki pattern: it keeps the index correct
--- if `content` changes without `search_text` being rewritten in the same statement.
-CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
+-- Scoped to `UPDATE OF search_text`, not every UPDATE on `memories`. The store
+-- bumps `access_count` / `last_accessed_at` on every retrieval, so firing on all
+-- updates would rewrite this row's index entries on every hit for no gain: the
+-- index is a function of `search_text` alone, so an update that does not set
+-- that column cannot make it stale. (This is why the `wiki_pages_fts` pattern's
+-- unconditional UPDATE trigger is not copied verbatim.)
+--
+-- Unindex and reindex are two statements in ONE trigger, not two triggers.
+-- SQLite fires multiple triggers for the same event in an unspecified order, and
+-- insert-before-delete silently desynchronises the index from the content table:
+-- reproduced, a rewrite left the document matching `context` but no longer
+-- `context_window`, with `integrity-check` still reporting success. The
+-- `... SELECT ... WHERE <guard>` form keeps one defined order and applies the
+-- same empty-row guard as above.
+CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF search_text ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, search_text)
-    VALUES ('delete', old.rowid, old.search_text);
-    INSERT INTO memories_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+        SELECT 'delete', old.rowid, old.search_text WHERE old.search_text <> '';
+    INSERT INTO memories_fts(rowid, search_text)
+        SELECT new.rowid, new.search_text WHERE new.search_text <> '';
 END;
 
 ------------------------------------------------------------------------------
@@ -128,19 +147,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chronicle_fts USING fts5(
     tokenize = "unicode61 tokenchars '_-.'"
 );
 
-CREATE TRIGGER IF NOT EXISTS chronicle_fts_insert AFTER INSERT ON channel_chronicle_checkpoints BEGIN
+CREATE TRIGGER IF NOT EXISTS chronicle_fts_insert AFTER INSERT ON channel_chronicle_checkpoints
+WHEN new.search_text <> '' BEGIN
     INSERT INTO chronicle_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS chronicle_fts_delete AFTER DELETE ON channel_chronicle_checkpoints BEGIN
+CREATE TRIGGER IF NOT EXISTS chronicle_fts_delete AFTER DELETE ON channel_chronicle_checkpoints
+WHEN old.search_text <> '' BEGIN
     INSERT INTO chronicle_fts(chronicle_fts, rowid, search_text)
     VALUES ('delete', old.rowid, old.search_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS chronicle_fts_update AFTER UPDATE ON channel_chronicle_checkpoints BEGIN
+-- Guarded and ordered exactly as the `memories_fts_update` trigger above; see
+-- that comment for why both the guard and the single-trigger form are load-bearing.
+CREATE TRIGGER IF NOT EXISTS chronicle_fts_update AFTER UPDATE OF search_text ON channel_chronicle_checkpoints BEGIN
     INSERT INTO chronicle_fts(chronicle_fts, rowid, search_text)
-    VALUES ('delete', old.rowid, old.search_text);
-    INSERT INTO chronicle_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+        SELECT 'delete', old.rowid, old.search_text WHERE old.search_text <> '';
+    INSERT INTO chronicle_fts(rowid, search_text)
+        SELECT new.rowid, new.search_text WHERE new.search_text <> '';
 END;
 
 ------------------------------------------------------------------------------
@@ -156,7 +180,8 @@ END;
 --
 -- The Rust backfill MUST rewrite `search_text` for every row with
 -- `analyzer::analyzed_text(content)`; because the UPDATE trigger above fires on
--- any UPDATE, that rewrite reindexes the row in the same transaction. It must
+-- any UPDATE that sets `search_text`, that rewrite reindexes the row in the
+-- same transaction. It must
 -- run to completion BEFORE the read path switches to these tables, and it is
 -- idempotent: recomputing `analyzed_text` over an already-analysed value is
 -- harmless because the raw copy is emitted verbatim alongside the stems.
