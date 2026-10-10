@@ -710,7 +710,7 @@ impl SpacebotModel {
             return;
         };
 
-        let models_url = format!("{}/models", provider_config.base_url.trim_end_matches('/'));
+        let models_url = routing::build_endpoint(&provider_config.base_url, "/models");
 
         let resolved = crate::llm::context_window::resolve_context_window(
             self.llm_manager.http_client(),
@@ -761,10 +761,8 @@ impl SpacebotModel {
             ApiType::Anthropic => self.call_anthropic(request, &provider_config).await,
             ApiType::OpenAiCompletions => self.call_openai(request, &provider_config).await,
             ApiType::OpenAiChatCompletions => {
-                let endpoint = format!(
-                    "{}/chat/completions",
-                    provider_config.base_url.trim_end_matches('/')
-                );
+                let endpoint =
+                    routing::build_endpoint(&provider_config.base_url, "/chat/completions");
                 let display_name = provider_config
                     .name
                     .as_deref()
@@ -861,10 +859,8 @@ impl SpacebotModel {
                 .await
             }
             ApiType::KiloGateway => {
-                let endpoint = format!(
-                    "{}/chat/completions",
-                    provider_config.base_url.trim_end_matches('/')
-                );
+                let endpoint =
+                    routing::build_endpoint(&provider_config.base_url, "/chat/completions");
                 self.call_openai_compatible_with_optional_auth(
                     request,
                     "Kilo Gateway",
@@ -1374,10 +1370,8 @@ impl SpacebotModel {
         match provider_config.api_type {
             ApiType::OpenAiCompletions => self.stream_openai(request, &provider_config).await,
             ApiType::OpenAiChatCompletions => {
-                let endpoint = format!(
-                    "{}/chat/completions",
-                    provider_config.base_url.trim_end_matches('/')
-                );
+                let endpoint =
+                    routing::build_endpoint(&provider_config.base_url, "/chat/completions");
                 let display_name = provider_config
                     .name
                     .as_deref()
@@ -1473,10 +1467,8 @@ impl SpacebotModel {
                 .await
             }
             ApiType::KiloGateway => {
-                let endpoint = format!(
-                    "{}/chat/completions",
-                    provider_config.base_url.trim_end_matches('/')
-                );
+                let endpoint =
+                    routing::build_endpoint(&provider_config.base_url, "/chat/completions");
                 self.stream_openai_compatible_with_optional_auth(
                     request,
                     "Kilo Gateway",
@@ -1638,10 +1630,8 @@ impl SpacebotModel {
             body["tools"] = serde_json::json!(tools);
         }
 
-        let chat_completions_url = format!(
-            "{}/v1/chat/completions",
-            provider_config.base_url.trim_end_matches('/')
-        );
+        let chat_completions_url =
+            routing::build_endpoint(&provider_config.base_url, "/chat/completions");
         let openai_account_id = if self.provider == "openai-chatgpt" {
             self.llm_manager.get_openai_account_id().await
         } else {
@@ -1686,13 +1676,11 @@ impl SpacebotModel {
         request: CompletionRequest,
         provider_config: &ProviderConfig,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
-        let base_url = provider_config.base_url.trim_end_matches('/');
         let is_chatgpt_codex = self.provider == "openai-chatgpt";
-        let responses_url = if is_chatgpt_codex {
-            format!("{base_url}/responses")
-        } else {
-            format!("{base_url}/v1/responses")
-        };
+        // The configured base URL is authoritative: append only the resource
+        // path. A ChatGPT/Codex base URL already carries the namespace it needs,
+        // so `/v1` is not inserted here either.
+        let responses_url = routing::build_endpoint(&provider_config.base_url, "/responses");
         let api_key = provider_config.api_key.as_str();
         let provider_label = provider_config
             .name
@@ -1811,13 +1799,11 @@ impl SpacebotModel {
         request: CompletionRequest,
         provider_config: &ProviderConfig,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
-        let base_url = provider_config.base_url.trim_end_matches('/');
         let is_chatgpt_codex = self.provider == "openai-chatgpt";
-        let responses_url = if is_chatgpt_codex {
-            format!("{base_url}/responses")
-        } else {
-            format!("{base_url}/v1/responses")
-        };
+        // The configured base URL is authoritative: append only the resource
+        // path. A ChatGPT/Codex base URL already carries the namespace it needs,
+        // so `/v1` is not inserted here either.
+        let responses_url = routing::build_endpoint(&provider_config.base_url, "/responses");
         let api_key = provider_config.api_key.as_str();
         let provider_label = provider_config
             .name
@@ -2108,10 +2094,14 @@ impl SpacebotModel {
         provider_display_name: &str,
         provider_config: &ProviderConfig,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
-        let base_url = provider_config.base_url.trim_end_matches('/');
-        let endpoint_path = match provider_config.api_type {
-            ApiType::OpenAiCompletions | ApiType::OpenAiResponses => "/v1/chat/completions",
-            ApiType::OpenAiChatCompletions | ApiType::Gemini => "/chat/completions",
+        // The configured base URL is authoritative, so every OpenAI-shaped API
+        // type appends only the resource path — `/v1` comes from the base URL
+        // when a deployment needs it, and is never inserted here.
+        let resource_path = match provider_config.api_type {
+            ApiType::OpenAiCompletions
+            | ApiType::OpenAiResponses
+            | ApiType::OpenAiChatCompletions
+            | ApiType::Gemini => "/chat/completions",
             ApiType::Azure => {
                 // Azure handles its own endpoint construction in the call() match
                 // This fallback should not be reached for Azure
@@ -2132,7 +2122,7 @@ impl SpacebotModel {
                 )));
             }
         };
-        let endpoint = format!("{base_url}{endpoint_path}");
+        let endpoint = routing::build_endpoint(&provider_config.base_url, resource_path);
         let api_key = provider_config.api_key.as_str();
 
         let mut messages = Vec::new();

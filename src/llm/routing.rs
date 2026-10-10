@@ -582,6 +582,40 @@ pub fn should_retry_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 425) || (500..=599).contains(&status)
 }
 
+/// Build a provider endpoint from a configured base URL and a resource path.
+///
+/// The configured base URL is authoritative: only the resource path is appended,
+/// never a version segment of our choosing. `/v1` is a deployment detail that
+/// some providers require and others reject, so a base URL carrying it
+/// (`https://api.openai.com/v1`, `https://api.clevecode.com/v1`) keeps it, and a
+/// base URL that omits it is left alone. A base URL that already ends with the
+/// resource path is used as-is rather than duplicated, and trailing slashes are
+/// trimmed so the join never produces an empty `//` segment.
+///
+/// Not used by Azure (that path builds its own versioned deployment URL) or by
+/// Anthropic (which owns its URL construction in `llm::anthropic`).
+pub fn build_endpoint(base_url: &str, resource_path: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    let path = if resource_path.starts_with('/') {
+        resource_path.to_string()
+    } else {
+        format!("/{resource_path}")
+    };
+
+    if base.is_empty() {
+        return path;
+    }
+
+    if base
+        .to_ascii_lowercase()
+        .ends_with(&path.to_ascii_lowercase())
+    {
+        return base.to_string();
+    }
+
+    format!("{base}{path}")
+}
+
 /// Whether an error indicates an actual rate limit (429) vs other transient failures.
 /// Only rate-limit errors should trigger cooldown — timeouts and 5xx errors are
 /// momentary and shouldn't lock out a model for the full cooldown period.
@@ -765,6 +799,82 @@ mod tests {
         );
         // Increasing intervals, starting at roughly a second.
         assert_eq!(PROVIDER_HTTP_RETRY_DELAYS_MS[0], 1_000);
-        assert!(PROVIDER_HTTP_RETRY_DELAYS_MS.windows(2).all(|w| w[0] < w[1]));
+        assert!(
+            PROVIDER_HTTP_RETRY_DELAYS_MS
+                .windows(2)
+                .all(|w| w[0] < w[1])
+        );
+    }
+
+    #[test]
+    fn endpoint_keeps_a_base_url_that_already_carries_v1() {
+        assert_eq!(
+            build_endpoint("https://api.openai.com/v1", "/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_endpoint("https://api.clevecode.com/v1", "/chat/completions"),
+            "https://api.clevecode.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn endpoint_never_inserts_v1_of_its_own() {
+        // A base URL without /v1 stays without it: the configured value is used
+        // as given, not rewritten to match some other deployment's shape.
+        assert_eq!(
+            build_endpoint("https://api.openai.com", "/chat/completions"),
+            "https://api.openai.com/chat/completions"
+        );
+        // A gateway with its own namespace is untouched apart from the path.
+        assert_eq!(
+            build_endpoint("https://gateway.example/v1beta/openai", "/chat/completions"),
+            "https://gateway.example/v1beta/openai/chat/completions"
+        );
+    }
+
+    #[test]
+    fn endpoint_trims_trailing_slashes_without_doubling() {
+        assert_eq!(
+            build_endpoint("https://api.openai.com/v1/", "/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_endpoint("https://api.openai.com/v1///", "/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // The resource path may arrive with or without its leading slash.
+        assert_eq!(
+            build_endpoint("https://api.openai.com/v1", "chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn endpoint_does_not_duplicate_a_resource_path_already_present() {
+        assert_eq!(
+            build_endpoint(
+                "https://api.openai.com/v1/chat/completions",
+                "/chat/completions"
+            ),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_endpoint("https://api.openai.com/v1/responses", "/responses"),
+            "https://api.openai.com/v1/responses"
+        );
+    }
+
+    #[test]
+    fn endpoint_never_emits_an_empty_segment() {
+        for base in [
+            "https://api.openai.com",
+            "https://api.openai.com/",
+            "https://api.openai.com//",
+        ] {
+            let built = build_endpoint(base, "/models");
+            assert_eq!(built, "https://api.openai.com/models");
+            assert!(!built.trim_start_matches("https://").contains("//"));
+        }
     }
 }
