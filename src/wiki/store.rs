@@ -834,16 +834,25 @@ fn lower_hex_id() -> String {
 ///
 /// FTS5 treats characters like `"`, `*`, `:`, `(`, `)` and bareword operators
 /// (`AND`, `OR`, `NOT`, `NEAR`) as syntax. We strip the input down to
-/// alphanumeric tokens (plus `_` and `-`) and append `*` to the last token for
-/// prefix matching. Returns an empty string when no usable tokens remain, in
+/// alphanumeric tokens (plus `_`, `-` and `.`) and append `*` to the last token
+/// for prefix matching. Returns an empty string when no usable tokens remain, in
 /// which case the caller should short-circuit instead of issuing the query.
+///
+/// `_`, `-` and `.` are kept because `wiki_pages_fts` indexes with
+/// `tokenize = "unicode61 tokenchars '_-.'"` (migration
+/// `20260816000002_wiki_fts_tokenchars.sql`), so `context_window` and
+/// `glm-5.3-flash` are *single tokens* in the index. Stripping a character the
+/// tokenizer keeps makes the two sides disagree and the term unmatchable: with
+/// `.` filtered out, `glm-5.3-flash` became the query `"glm-53-flash"*`, which
+/// matches nothing. Every character this filter keeps must be a character the
+/// tokenizer keeps, and vice versa.
 fn sanitize_fts_query(input: &str) -> String {
     let tokens: Vec<String> = input
         .split_whitespace()
         .map(|token| {
             token
                 .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
                 .collect::<String>()
         })
         .filter(|token| !token.is_empty())
@@ -881,5 +890,18 @@ mod tests {
         assert_eq!(sanitize_fts_query("col:val"), "\"colval\"*");
         assert_eq!(sanitize_fts_query("\"phrase\""), "\"phrase\"*");
         assert_eq!(sanitize_fts_query("a*b"), "\"ab\"*");
+    }
+
+    /// The characters this filter keeps must be the characters the tokenizer
+    /// keeps. `wiki_pages_fts` is built with `tokenchars '_-.'`, so a term like
+    /// `glm-5.3-flash` is one token in the index; sanitising it to
+    /// `"glm-53-flash"*` would match nothing at all.
+    #[test]
+    fn keeps_identifier_characters_the_tokenizer_keeps() {
+        assert_eq!(sanitize_fts_query("glm-5.3-flash"), "\"glm-5.3-flash\"*");
+        assert_eq!(sanitize_fts_query("qwen3.8-flash"), "\"qwen3.8-flash\"*");
+        assert_eq!(sanitize_fts_query("context_window"), "\"context_window\"*");
+        // Still an operator-free query: a colon and an asterisk cannot survive.
+        assert_eq!(sanitize_fts_query("glm:5.3-flash*"), "\"glm5.3-flash\"*");
     }
 }
