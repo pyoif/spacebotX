@@ -293,12 +293,16 @@ impl LlmManager {
 
     /// Where the cached models.dev payload lives, next to other agent state.
     ///
+    /// The name changed with the switch from `api.json` to the flat `models.json`
+    /// listing, so a payload cached in the old provider-nested shape is not read
+    /// back and the first lookup after an upgrade fetches the new source.
+    ///
     /// `None` when the manager has no instance directory, in which case the
     /// models.dev lookup is simply skipped and the configured default stands.
     pub fn models_dev_cache_path(&self) -> Option<PathBuf> {
         self.instance_dir
             .as_ref()
-            .map(|dir| dir.join("models_dev_api.json"))
+            .map(|dir| dir.join("models_dev_models.json"))
     }
 
     /// Record that a request of this size was refused for exceeding the window.

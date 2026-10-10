@@ -12,6 +12,11 @@
 //!    the endpoint says nothing. Fetched with a short timeout and cached on disk
 //!    for a day so a request never waits on it twice.
 //!
+//! The catalogue read here is `models.json`, the provider-agnostic listing: one
+//! flat object keyed by a namespaced model id (`zhipuai/glm-5.3-flash`, window at
+//! `limit.context`). `api.json` is deliberately *not* used — its provider-nested
+//! shape is only needed by the catalogue UI, which keeps its own copy.
+//!
 //! Every failure is soft. A missing field, an unreachable host or an unparsable
 //! payload all resolve to `None`, which leaves the caller on its existing
 //! default rather than failing a request.
@@ -19,8 +24,11 @@
 use serde_json::Value;
 use std::path::Path;
 
-/// The public models.dev catalogue.
-pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+/// The public models.dev catalogue, provider-agnostic listing.
+///
+/// Keys are namespaced (`zhipuai/glm-5.3-flash`, `deepseek/deepseek-v4.1-flash`)
+/// and the context window lives under `limit.context`.
+pub const MODELS_DEV_URL: &str = "https://models.dev/models.json";
 
 /// How long a cached models.dev payload is trusted, in seconds.
 pub const MODELS_DEV_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -138,17 +146,69 @@ fn strip_vendor_prefix(id: &str) -> &str {
     }
 }
 
-/// Lower-case and fold `.` onto `-`, so the two separators compare equal.
-fn canonical(id: &str) -> String {
-    id.to_ascii_lowercase().replace('.', "-")
+/// Flip the separator that sits between two digits — the version segment.
+///
+/// `glm-5-3-flash` -> `glm-5.3-flash` and `glm-5.3-flash` -> `glm-5-3-flash`.
+/// A separator that is not between two digits is left alone, so the dash before
+/// `flash` in `qwen3.8-flash` survives and only the `3.8`/`3-8` part flips.
+fn swap_version_separators(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut swapped = String::with_capacity(name.len());
+    for (index, ch) in chars.iter().enumerate() {
+        let between_digits = index > 0
+            && index + 1 < chars.len()
+            && chars[index - 1].is_ascii_digit()
+            && chars[index + 1].is_ascii_digit();
+        match (ch, between_digits) {
+            ('.', true) => swapped.push('-'),
+            ('-', true) => swapped.push('.'),
+            _ => swapped.push(*ch),
+        }
+    }
+    swapped
+}
+
+/// Separator variants of a model name, most faithful first, lower-cased and
+/// deduplicated.
+///
+/// Providers and the catalogue disagree about `-` and `.` in the *same* id
+/// (`glm-5-3-flash` vs `glm-5.3-flash`), and real ids mix both conventions
+/// (`glm-5.3-flash` has a dot inside the version and dashes elsewhere). So the
+/// separator is flipped in both directions across the whole id, *and* only where
+/// it sits between two digits.
+///
+/// Every variant keeps the whole model name, so callers can still demand exact
+/// equality against one — this is not a prefix or similarity match.
+fn separator_variants(name: &str) -> Vec<String> {
+    let mut variants: Vec<String> = Vec::new();
+    for variant in [
+        name.to_owned(),
+        name.replace('.', "-"),
+        name.replace('-', "."),
+        swap_version_separators(name),
+    ] {
+        let variant = variant.to_ascii_lowercase();
+        if !variants.contains(&variant) {
+            variants.push(variant);
+        }
+    }
+    variants
 }
 
 /// Map a provider-flavoured model id onto one of `known` ids.
 ///
 /// Provider ids are aggregator-flavoured and rarely match a catalogue verbatim,
-/// so the ladder tries, in order: exact, `:qualifier`-stripped, `-`/`.` swapped,
-/// and vendor-namespace-stripped. The rung that matched is returned with the id
-/// so the caller can log what it did. All four rungs compare case-insensitively.
+/// so the ladder tries, in order: exact, `:qualifier`-stripped, separator-swapped
+/// (`-` <-> `.`, both directions), and vendor-namespace-stripped. The rung that
+/// matched is returned with the id so the caller can log what it did. All four
+/// rungs compare case-insensitively.
+///
+/// The catalogue used here keys entries by a namespaced id, so a bare provider id
+/// is matched against the *model segment* of the key (`zhipuai/glm-5.3-flash` for
+/// `glm-5-3-flash`), which is what the vendor-namespace rung does.
+///
+/// Every comparison is exact equality against a whole generated variant: no rung
+/// matches on a prefix, on a substring or on similarity.
 ///
 /// Every rung keeps the full model name intact, and there is deliberately **no
 /// fuzzy matching**: when nothing matches, the caller falls through to its
@@ -184,20 +244,25 @@ pub fn map_model_id(candidate: &str, known: &[String]) -> Option<(String, IdMatc
         return Some((found.clone(), IdMatch::ColonSuffix));
     }
 
-    // (c) `-` and `.` swapped in either direction.
-    let canonical_candidate = canonical(descoped);
-    if let Some(found) = known
-        .iter()
-        .find(|id| canonical(strip_colon_suffix(id)) == canonical_candidate)
-    {
+    // (c) separator variants, vendor namespace left in place on both sides.
+    let variants = separator_variants(descoped);
+    if let Some(found) = known.iter().find(|id| {
+        let known_variants = separator_variants(strip_colon_suffix(id));
+        variants
+            .iter()
+            .any(|variant| known_variants.contains(variant))
+    }) {
         return Some((found.clone(), IdMatch::SeparatorSwap));
     }
 
-    // (d) with a leading `vendor/` removed from either side.
-    let bare_candidate = canonical(strip_vendor_prefix(descoped));
+    // (d) with a leading `vendor/` removed from either side, then the same
+    // separator variants — this is the rung that matches a bare provider id
+    // against the model segment of a namespaced catalogue key.
+    let bare = separator_variants(strip_vendor_prefix(descoped));
     if let Some(found) = known.iter().find(|id| {
-        let bare_known = canonical(strip_vendor_prefix(strip_colon_suffix(id)));
-        bare_known == bare_candidate
+        let known_bare =
+            separator_variants(strip_vendor_prefix(strip_colon_suffix(id)));
+        bare.iter().any(|variant| known_bare.contains(variant))
     }) {
         return Some((found.clone(), IdMatch::VendorPrefix));
     }
@@ -248,8 +313,10 @@ pub fn context_window_from_models_response(body: &Value, model_id: &str) -> Opti
 
 /// Every `(model id, context window)` pair in a decoded models.dev payload.
 ///
-/// models.dev nests models under providers: `{ "<provider>": { "models": { … } } }`.
-/// A flat `{ "<id>": { … } }` shape is also tolerated.
+/// The source used here, `models.json`, is a flat `{ "<namespaced id>": { … } }`
+/// object, so the key *is* the id (`zhipuai/glm-5.3-flash`). The provider-nested
+/// `api.json` shape — `{ "<provider>": { "models": { … } } }` — is also accepted,
+/// since an older cached payload may still be in that form.
 pub fn collect_models_dev_entries(data: &Value) -> Vec<(String, usize)> {
     let mut found = Vec::new();
     let Some(root) = data.as_object() else {
@@ -493,17 +560,80 @@ mod tests {
     }
 
     #[test]
-    fn id_mapping_swaps_dash_and_dot() {
+    fn separator_variants_are_bidirectional_and_deduplicated() {
+        // Dashes -> dot: the direction a dash-named provider id needs.
+        assert!(separator_variants("glm-5-3-flash").contains(&"glm-5.3-flash".to_string()));
+        // Dot -> dash: the reverse direction.
+        assert!(separator_variants("glm-5.3-flash").contains(&"glm-5-3-flash".to_string()));
+        // The id itself comes first and duplicates are dropped.
+        let variants = separator_variants("glm-5.3-flash");
+        assert_eq!(variants.first().map(String::as_str), Some("glm-5.3-flash"));
+        let mut unique = variants.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), variants.len(), "variants must be deduplicated");
+    }
+
+    #[test]
+    fn version_segment_swap_flips_only_the_separator_between_digits() {
+        assert_eq!(swap_version_separators("glm-5-3-flash"), "glm-5.3-flash");
+        assert_eq!(swap_version_separators("glm-5.3-flash"), "glm-5-3-flash");
+        assert_eq!(swap_version_separators("qwen3.8-flash"), "qwen3-8-flash");
+        assert_eq!(swap_version_separators("qwen3-8-flash"), "qwen3.8-flash");
+        // A separator that is not between two digits is left where it is.
+        assert_eq!(
+            swap_version_separators("claude-3-5-sonnet"),
+            "claude-3.5-sonnet"
+        );
+    }
+
+    #[test]
+    fn id_mapping_swaps_dash_and_dot_in_both_directions() {
+        // Provider uses dashes, catalogue uses a dot.
         let ids = known(&["glm-5.3-flash"]);
         assert_eq!(
             map_model_id("glm-5-3-flash", &ids),
             Some(("glm-5.3-flash".to_string(), IdMatch::SeparatorSwap))
         );
-        // And the other direction.
+
+        // And the reverse direction: provider uses a dot, catalogue uses dashes.
         let ids = known(&["glm-5-3-flash"]);
         assert_eq!(
             map_model_id("glm-5.3-flash", &ids),
             Some(("glm-5-3-flash".to_string(), IdMatch::SeparatorSwap))
+        );
+
+        // Every dot flipped to a dash, the aggregator form of a dotted id.
+        let ids = known(&["deepseek-v4-1-flash"]);
+        assert_eq!(
+            map_model_id("deepseek.v4.1.flash", &ids),
+            Some(("deepseek-v4-1-flash".to_string(), IdMatch::SeparatorSwap))
+        );
+    }
+
+    #[test]
+    fn id_mapping_matches_the_model_segment_of_a_namespaced_catalogue_key() {
+        // The real catalogue shape: `models.json` keys carry a vendor namespace.
+        let ids = known(&["zhipuai/glm-5.3-flash", "zhipuai/glm-5.3"]);
+        assert_eq!(
+            map_model_id("glm-5-3-flash", &ids),
+            Some(("zhipuai/glm-5.3-flash".to_string(), IdMatch::VendorPrefix))
+        );
+        // The shorter name must not borrow the longer entry, and vice versa.
+        assert_eq!(
+            map_model_id("glm-5-3", &ids),
+            Some(("zhipuai/glm-5.3".to_string(), IdMatch::VendorPrefix))
+        );
+        // The reverse separator direction, still against the namespaced key.
+        let ids = known(&["zhipuai/glm-5-3-flash"]);
+        assert_eq!(
+            map_model_id("glm-5.3-flash", &ids),
+            Some(("zhipuai/glm-5-3-flash".to_string(), IdMatch::VendorPrefix))
+        );
+        // A routed qualifier on top of the namespace is stripped first.
+        assert_eq!(
+            map_model_id("glm-5-3-flash:cloudflare", &ids),
+            Some(("zhipuai/glm-5-3-flash".to_string(), IdMatch::VendorPrefix))
         );
     }
 
@@ -588,6 +718,93 @@ mod tests {
             Some(("glm-5.3-flash".to_string(), IdMatch::VendorPrefix, 200_000))
         );
         assert_eq!(resolve_from_models_dev("nope-1-nothing", &data), None);
+    }
+
+    #[test]
+    fn flat_models_json_entries_are_collected() {
+        // `models.json` is a flat object whose keys are the namespaced ids, as
+        // opposed to the provider-nested `api.json` shape.
+        let data = json!({
+            "zhipuai/glm-5.3-flash": {
+                "id": "zhipuai/glm-5.3-flash",
+                "limit": { "context": 1_000_000, "output": 131_072 }
+            },
+            "baai/bge-m3": { "id": "baai/bge-m3", "limit": { "context": 8_192 } }
+        });
+        let mut entries = collect_models_dev_entries(&data);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                ("baai/bge-m3".to_string(), 8_192),
+                ("zhipuai/glm-5.3-flash".to_string(), 1_000_000),
+            ]
+        );
+    }
+
+    #[test]
+    fn real_catalogue_ids_resolve_against_the_flat_namespaced_listing() {
+        // Ids and windows copied from https://models.dev/models.json so the shape
+        // and the naming convention are both the real ones: flat keys, namespaced,
+        // windows under `limit.context`.
+        let data = json!({
+            "zhipuai/glm-5.3": { "limit": { "context": 1_000_000, "output": 131_072 } },
+            "zhipuai/glm-5.3-flash": { "limit": { "context": 1_000_000, "output": 131_072 } },
+            "deepseek/deepseek-v4.1-flash": { "limit": { "context": 1_000_000, "output": 384_000 } },
+            "alibaba/qwen3.8-flash": { "limit": { "context": 1_000_000, "output": 131_072 } },
+            "moonshotai/kimi-k3": { "limit": { "context": 1_048_576, "output": 131_072 } },
+            "deepseek/deepseek-v4-flash": { "limit": { "context": 1_000_000, "output": 384_000 } }
+        });
+
+        // Provider id in dashes, catalogue key in dots and namespaced.
+        assert_eq!(
+            resolve_from_models_dev("glm-5-3-flash", &data),
+            Some((
+                "zhipuai/glm-5.3-flash".to_string(),
+                IdMatch::VendorPrefix,
+                1_000_000
+            ))
+        );
+        // Dot in the provider id, dash in the catalogue key, namespaced.
+        assert_eq!(
+            resolve_from_models_dev("glm-5.3", &data),
+            Some(("zhipuai/glm-5.3".to_string(), IdMatch::VendorPrefix, 1_000_000))
+        );
+        assert_eq!(
+            resolve_from_models_dev("deepseek-v4.1-flash", &data),
+            Some((
+                "deepseek/deepseek-v4.1-flash".to_string(),
+                IdMatch::VendorPrefix,
+                1_000_000
+            ))
+        );
+        // A dotted id must not borrow the dotted-less sibling.
+        assert_eq!(
+            resolve_from_models_dev("deepseek-v4-1-flash", &data),
+            Some((
+                "deepseek/deepseek-v4.1-flash".to_string(),
+                IdMatch::VendorPrefix,
+                1_000_000
+            ))
+        );
+        assert_eq!(
+            resolve_from_models_dev("qwen3.8-flash", &data),
+            Some((
+                "alibaba/qwen3.8-flash".to_string(),
+                IdMatch::VendorPrefix,
+                1_000_000
+            ))
+        );
+        assert_eq!(
+            resolve_from_models_dev("kimi-k3", &data),
+            Some((
+                "moonshotai/kimi-k3".to_string(),
+                IdMatch::VendorPrefix,
+                1_048_576
+            ))
+        );
+        // Nothing in the catalogue is a variant of this one, so the default stands.
+        assert_eq!(resolve_from_models_dev("kimi-k9", &data), None);
     }
 
     #[test]
