@@ -780,6 +780,7 @@ mod context_ceiling_tests {
         let raised = ContextCeilings {
             default: Some(1_050_000),
             learned: learned.learned.clone(),
+            ..Default::default()
         };
         assert_eq!(raised.ceiling_for("m"), Some(90_000));
         assert_eq!(raised.ceiling_for("untouched"), Some(1_050_000));
