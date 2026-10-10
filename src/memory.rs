@@ -1,5 +1,6 @@
 //! Memory storage and retrieval system.
 
+pub mod analyzer;
 pub mod consolidation;
 pub mod embedding;
 pub mod lance;

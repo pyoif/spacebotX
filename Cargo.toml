@@ -32,6 +32,11 @@ redb = "2.4"
 # Vector / embedding operations
 fastembed = "4"
 
+# Text analysis for the SQLite FTS5 memory index (Snowball English stemming).
+# Already in the tree via tantivy; promoted to a direct dependency so the
+# analyzer survives the removal of lancedb/lance-index.
+rust-stemmers = "1.2"
+
 # Encoding
 base64 = "0.22"
 hex = "0.4"
