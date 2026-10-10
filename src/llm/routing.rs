@@ -551,6 +551,37 @@ pub const MAX_RETRIES_PER_MODEL: usize = 3;
 /// Base delay for exponential backoff between retries (milliseconds).
 pub const RETRY_BASE_DELAY_MS: u64 = 500;
 
+/// Total number of sends for a single provider HTTP request.
+///
+/// One initial attempt plus three retries.
+pub const PROVIDER_HTTP_MAX_ATTEMPTS: usize = 4;
+
+/// How long to wait before each *additional* provider HTTP send, in milliseconds
+/// (~1s, ~3s, ~8s). The array is shorter than `PROVIDER_HTTP_MAX_ATTEMPTS` by
+/// exactly one, because the first attempt never waits.
+pub const PROVIDER_HTTP_RETRY_DELAYS_MS: [u64; 3] = [1_000, 3_000, 8_000];
+
+/// Whether an HTTP response status should be retried at the provider layer.
+///
+/// The rule is deliberately simple and covers only what can plausibly succeed
+/// when the same request is sent again:
+///
+/// * `429` — never retried here. A rate limit is handled one level up, where the
+///   model is put into cooldown and the fallback chain takes over; retrying the
+///   same endpoint would only deepen the limit.
+/// * `401` / `403` / `404` — never retried. Bad credentials, forbidden access and
+///   a wrong URL cannot succeed on repeat.
+/// * `408` (Request Timeout), `409` (Conflict), `425` (Too Early) and every `5xx`
+///   — retried, because these are transient by nature.
+/// * Everything else (other 4xx) — not retried; a malformed request stays
+///   malformed.
+pub fn should_retry_status(status: u16) -> bool {
+    if status == 429 || matches!(status, 401 | 403 | 404) {
+        return false;
+    }
+    matches!(status, 408 | 409 | 425) || (500..=599).contains(&status)
+}
+
 /// Whether an error indicates an actual rate limit (429) vs other transient failures.
 /// Only rate-limit errors should trigger cooldown — timeouts and 5xx errors are
 /// momentary and shouldn't lock out a model for the full cooldown period.
@@ -693,5 +724,47 @@ mod tests {
         // Other transient errors should not be rate limited
         assert!(!is_rate_limit_error("503 Service Unavailable"));
         assert!(!is_rate_limit_error("timeout"));
+    }
+
+    #[test]
+    fn provider_retry_covers_the_transient_status_classes() {
+        // Timeout / conflict / too early — transient, worth another try.
+        assert!(should_retry_status(408));
+        assert!(should_retry_status(409));
+        assert!(should_retry_status(425));
+        // Every 5xx is a server-side transient failure.
+        assert!(should_retry_status(500));
+        assert!(should_retry_status(502));
+        assert!(should_retry_status(503));
+        assert!(should_retry_status(504));
+        assert!(should_retry_status(599));
+    }
+
+    #[test]
+    fn provider_retry_fails_fast_on_rate_limits_and_permanent_errors() {
+        // A rate limit is the caller's cue to cooldown and fall back, not to
+        // send the same request again.
+        assert!(!should_retry_status(429));
+        // Auth and routing failures cannot succeed on repeat.
+        assert!(!should_retry_status(401));
+        assert!(!should_retry_status(403));
+        assert!(!should_retry_status(404));
+        // Malformed requests stay malformed.
+        assert!(!should_retry_status(400));
+        assert!(!should_retry_status(422));
+        // Successes are never retried.
+        assert!(!should_retry_status(200));
+    }
+
+    #[test]
+    fn provider_retry_delays_back_off_and_keep_up_with_the_attempt_budget() {
+        // One delay per retry: attempts minus the initial send.
+        assert_eq!(
+            PROVIDER_HTTP_RETRY_DELAYS_MS.len(),
+            PROVIDER_HTTP_MAX_ATTEMPTS - 1
+        );
+        // Increasing intervals, starting at roughly a second.
+        assert_eq!(PROVIDER_HTTP_RETRY_DELAYS_MS[0], 1_000);
+        assert!(PROVIDER_HTTP_RETRY_DELAYS_MS.windows(2).all(|w| w[0] < w[1]));
     }
 }

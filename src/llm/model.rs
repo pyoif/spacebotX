@@ -1806,49 +1806,44 @@ impl SpacebotModel {
             None
         };
 
-        let mut request_builder = self
-            .llm_manager
-            .http_client()
-            .post(&responses_url)
-            .header("authorization", format!("Bearer {api_key}"))
-            .header("content-type", "application/json")
-            .header("accept-encoding", "identity")
-            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS));
-        if let Some(account_id) = openai_account_id {
-            request_builder = request_builder.header("ChatGPT-Account-Id", account_id);
-        }
-        if is_chatgpt_codex {
-            request_builder = request_builder
-                .header("originator", "opencode")
-                .header(
-                    "session_id",
-                    format!("spacebot-{}", chrono::Utc::now().timestamp()),
+        let response = Self::send_json_with_provider_retry(
+            |body| {
+                let mut request_builder = self
+                    .llm_manager
+                    .http_client()
+                    .post(&responses_url)
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("content-type", "application/json")
+                    .header("accept-encoding", "identity")
+                    .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS));
+                if let Some(account_id) = openai_account_id.as_deref() {
+                    request_builder = request_builder.header("ChatGPT-Account-Id", account_id);
+                }
+                if is_chatgpt_codex {
+                    request_builder = request_builder
+                        .header("originator", "opencode")
+                        .header(
+                            "session_id",
+                            format!("spacebot-{}", chrono::Utc::now().timestamp()),
+                        )
+                        .header(
+                            "user-agent",
+                            format!("spacebot/{}", env!("CARGO_PKG_VERSION")),
+                        );
+                }
+                request_builder.json(body)
+            },
+            &body,
+            &provider_label,
+            |status, response_text| {
+                format!(
+                    "{provider_label} Responses API error ({status}): {}",
+                    parse_openai_error_message(response_text)
+                        .unwrap_or_else(|| "unknown error".to_string())
                 )
-                .header(
-                    "user-agent",
-                    format!("spacebot/{}", env!("CARGO_PKG_VERSION")),
-                );
-        }
-
-        let response = request_builder
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| CompletionError::ProviderError(error.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let response_text = response
-                .text()
-                .await
-                .unwrap_or_else(|error| format!("failed to read error response body: {error}"));
-
-            return Err(CompletionError::ProviderError(format!(
-                "{provider_label} Responses API error ({status}): {}",
-                parse_openai_error_message(&response_text)
-                    .unwrap_or_else(|| "unknown error".to_string())
-            )));
-        }
+            },
+        )
+        .await?;
 
         let provider_label = provider_label.to_string();
         let stream_accumulator = self.usage_accumulator.clone();
@@ -2242,6 +2237,82 @@ impl SpacebotModel {
         .await
     }
 
+    /// Send one provider JSON request, retrying transient non-2xx responses.
+    ///
+    /// The retry rule lives in [`crate::llm::routing::should_retry_status`]:
+    /// `429` fails immediately so the caller can record a cooldown and fall back
+    /// instead of hammering the same endpoint; `401`/`403`/`404` cannot succeed
+    /// on repeat; and the transient classes (`408`, `409`, `425`, every `5xx`)
+    /// plus transport/timeout errors are retried until
+    /// [`crate::llm::routing::PROVIDER_HTTP_MAX_ATTEMPTS`] sends have been made,
+    /// backing off on
+    /// [`crate::llm::routing::PROVIDER_HTTP_RETRY_DELAYS_MS`].
+    ///
+    /// `build_request` is invoked once per attempt, so a retry rebuilds the
+    /// request from the body rather than resending a consumed `RequestBuilder`.
+    /// `format_error` lets each caller keep its own error phrasing.
+    async fn send_json_with_provider_retry<F, E>(
+        mut build_request: F,
+        body: &serde_json::Value,
+        provider_label: &str,
+        format_error: E,
+    ) -> Result<reqwest::Response, CompletionError>
+    where
+        F: FnMut(&serde_json::Value) -> reqwest::RequestBuilder,
+        E: Fn(reqwest::StatusCode, &str) -> String,
+    {
+        let max_attempts = routing::PROVIDER_HTTP_MAX_ATTEMPTS;
+        let mut attempt = 0usize;
+
+        loop {
+            attempt += 1;
+            match build_request(body).send().await {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    let status = response.status();
+                    // Retry only what can plausibly succeed on a second send.
+                    if attempt < max_attempts && routing::should_retry_status(status.as_u16()) {
+                        let delay_ms = provider_retry_delay_ms(attempt);
+                        tracing::warn!(
+                            provider = %provider_label,
+                            attempt,
+                            status = status.as_u16(),
+                            delay_ms,
+                            "provider returned a retryable status, retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+
+                    let response_text = response.text().await.unwrap_or_else(|error| {
+                        format!("failed to read error response body: {error}")
+                    });
+                    return Err(CompletionError::ProviderError(format_error(
+                        status,
+                        &response_text,
+                    )));
+                }
+                Err(error) => {
+                    // No response at all: a connection reset or timeout is the
+                    // canonical transient failure, so it gets the same budget.
+                    if attempt < max_attempts {
+                        let delay_ms = provider_retry_delay_ms(attempt);
+                        tracing::warn!(
+                            provider = %provider_label,
+                            attempt,
+                            delay_ms,
+                            %error,
+                            "provider request failed before a response, retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+                    return Err(CompletionError::ProviderError(error.to_string()));
+                }
+            }
+        }
+    }
+
     async fn stream_openai_chat_request<F>(
         &self,
         mut build_request: F,
@@ -2252,25 +2323,22 @@ impl SpacebotModel {
         F: FnMut(&serde_json::Value) -> reqwest::RequestBuilder,
     {
         let stream_request_body = with_streaming_enabled(&request_body);
-        let response = build_request(&stream_request_body)
-            .header("accept-encoding", "identity")
-            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
-            .send()
-            .await
-            .map_err(|error| CompletionError::ProviderError(error.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let response_text = response
-                .text()
-                .await
-                .unwrap_or_else(|error| format!("failed to read error response body: {error}"));
-
-            return Err(CompletionError::ProviderError(format!(
-                "{provider_label} API error ({})",
-                format_api_error_from_response_text(status, &response_text)
-            )));
-        }
+        let response = Self::send_json_with_provider_retry(
+            |body| {
+                build_request(body)
+                    .header("accept-encoding", "identity")
+                    .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
+            },
+            &stream_request_body,
+            provider_label,
+            |status, response_text| {
+                format!(
+                    "{provider_label} API error ({})",
+                    format_api_error_from_response_text(status, response_text)
+                )
+            },
+        )
+        .await?;
 
         let provider_label = provider_label.to_string();
         let stream_accumulator = self.usage_accumulator.clone();
@@ -2880,6 +2948,19 @@ fn with_streaming_enabled(request_body: &serde_json::Value) -> serde_json::Value
     let mut body = request_body.clone();
     body["stream"] = serde_json::json!(true);
     body
+}
+
+/// Backoff delay before the given (1-based) provider HTTP attempt's retry.
+///
+/// The first attempt never waits; later attempts read
+/// [`crate::llm::routing::PROVIDER_HTTP_RETRY_DELAYS_MS`], falling back to the
+/// longest configured delay if the attempt budget ever outgrows the array.
+fn provider_retry_delay_ms(attempt: usize) -> u64 {
+    let delays = routing::PROVIDER_HTTP_RETRY_DELAYS_MS;
+    delays
+        .get(attempt.saturating_sub(1))
+        .copied()
+        .unwrap_or_else(|| delays.last().copied().unwrap_or(1_000))
 }
 
 fn format_api_error_from_response_text(status: reqwest::StatusCode, response_text: &str) -> String {
