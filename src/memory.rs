@@ -7,6 +7,7 @@ pub mod lance;
 pub mod maintenance;
 pub mod render;
 pub mod search;
+pub mod sqlite_index;
 pub mod store;
 pub mod types;
 pub mod working;

@@ -145,6 +145,19 @@ impl MemorySearch {
         Ok(embedded)
     }
 
+    /// One-time backfill of the analysed `search_text` columns that
+    /// `migrations/20260816000001_memory_search_sqlite.sql` could only fill with
+    /// raw text (SQL cannot stem). Idempotent and cheap when warm — it rewrites
+    /// a row only when the analysed value differs from what is stored.
+    ///
+    /// Runs alongside [`Self::backfill_chronicle_embeddings`] on boot. Vector
+    /// storage is deliberately not touched here: vectors need the embedding
+    /// model and are filled by that backfill, so text search works while vector
+    /// search is still warming up.
+    pub async fn backfill_search_text(&self, pool: &sqlx::SqlitePool) -> Result<usize> {
+        crate::memory::sqlite_index::backfill_search_text(pool).await
+    }
+
     /// Unified labeled search: memory results (with checkpoint range-join
     /// provenance) plus chronicle checkpoint hits, when the chronicle table
     /// is wired. Checkpoint hits are labeled by title + seq. Queryless modes

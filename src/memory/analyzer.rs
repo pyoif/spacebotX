@@ -102,6 +102,28 @@ pub fn analyzed_text(content: &str) -> String {
     }
 }
 
+/// The value to store in a `search_text` column for `content`.
+///
+/// [`analyzed_text`] returns its input unchanged when the input has no tokens at
+/// all (whitespace, punctuation), and that is *not* a safe value for the FTS5
+/// column. The triggers guard on `search_text <> ''`, so whitespace passes the
+/// guard, gets inserted as a document FTS5 cannot tokenize, and leaves the
+/// index disagreeing with the content table — the corruption the guards in
+/// `migrations/20260816000001_memory_search_sqlite.sql` exist to prevent.
+///
+/// Returning `""` for tokenless content makes both halves of the guard agree:
+/// such a row is skipped on insert and skipped again on delete, so the index
+/// simply has no entry for it instead of having a broken one.
+pub fn search_text(content: &str) -> String {
+    let analyzed = analyzed_text(content);
+
+    if analyzed.chars().any(|ch| ch.is_alphanumeric()) {
+        analyzed
+    } else {
+        String::new()
+    }
+}
+
 /// Build an FTS5 `MATCH` expression for a user query, or `None` if the query
 /// carries no usable terms (callers must treat that as "no results", not as an
 /// error — an empty `MATCH` string is a syntax error).
@@ -314,6 +336,23 @@ mod tests {
     fn analyzed_text_handles_empty_input() {
         assert_eq!(analyzed_text(""), "");
         assert_eq!(analyzed_text("   "), "   ");
+    }
+
+    #[test]
+    fn search_text_never_returns_untokenizable_text() {
+        // `analyzed_text` deliberately preserves whitespace, but the FTS5
+        // triggers guard on `search_text <> ''`, so a whitespace-only value
+        // would be indexed as a document with no terms. `search_text` is the
+        // value the write paths store, and it must be empty in that case.
+        assert_eq!(analyzed_text("   "), "   ");
+        assert_eq!(search_text("   "), "");
+        assert_eq!(search_text("!!! ---"), "");
+        assert_eq!(search_text(""), "");
+
+        // Real content keeps both halves.
+        let analyzed = search_text("memories");
+        assert!(analyzed.contains("memori"), "missing stem: {analyzed}");
+        assert!(analyzed.contains("memories"), "missing raw: {analyzed}");
     }
 
     #[test]

@@ -881,6 +881,9 @@ pub async fn create_agent_internal(
     {
         tracing::warn!(%error, agent_id = %agent_id, "chronicle embedding backfill failed");
     }
+    if let Err(error) = memory_search.backfill_search_text(&db.sqlite).await {
+        tracing::warn!(%error, agent_id = %agent_id, "memory search_text backfill failed");
+    }
     let task_store = state
         .task_store
         .load()

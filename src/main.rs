@@ -2341,8 +2341,19 @@ async fn initialize_agents(
         }
         let memory_search = Arc::new(memory_search);
 
+        // The analysed `search_text` columns must be complete *before* the read
+        // path uses these tables: stemmed and unstemmed tokens never cross-match
+        // in FTS5, so a row left holding only the raw copy is invisible to a
+        // stem-sharing query until this has run. It is cheap when warm — it
+        // rewrites a row only when the analysed value differs from the stored
+        // one — so it is awaited on the boot path rather than spawned.
+        if let Err(error) = memory_search.backfill_search_text(&db.sqlite).await {
+            tracing::warn!(%error, agent = %agent_config.id, "memory search_text backfill failed");
+        }
+
         // One-time backfill of level-0 checkpoint embeddings (1.7), off the
-        // boot path — the table serves vector search while it fills.
+        // boot path — it needs the embedding model, and the table serves vector
+        // search while it fills.
         {
             let memory_search = Arc::clone(&memory_search);
             let pool = db.sqlite.clone();
