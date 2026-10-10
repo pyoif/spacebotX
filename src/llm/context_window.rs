@@ -14,8 +14,9 @@
 //!
 //! The catalogue read here is `models.json`, the provider-agnostic listing: one
 //! flat object keyed by a namespaced model id (`zhipuai/glm-5.3-flash`, window at
-//! `limit.context`). `api.json` is deliberately *not* used — its provider-nested
-//! shape is only needed by the catalogue UI, which keeps its own copy.
+//! `limit.context`). The provider-nested `api.json` is not used anywhere any more;
+//! the catalogue UI reads the same flat listing and reconstructs `provider/model`
+//! routing ids from the vendor segment of each key.
 //!
 //! Every failure is soft. A missing field, an unreachable host or an unparsable
 //! payload all resolve to `None`, which leaves the caller on its existing
@@ -315,8 +316,8 @@ pub fn context_window_from_models_response(body: &Value, model_id: &str) -> Opti
 ///
 /// The source used here, `models.json`, is a flat `{ "<namespaced id>": { … } }`
 /// object, so the key *is* the id (`zhipuai/glm-5.3-flash`). The provider-nested
-/// `api.json` shape — `{ "<provider>": { "models": { … } } }` — is also accepted,
-/// since an older cached payload may still be in that form.
+/// `api.json` shape — `{ "<provider>": { "models": { … } } }` — is still accepted
+/// for tolerance, but nothing writes it any more.
 pub fn collect_models_dev_entries(data: &Value) -> Vec<(String, usize)> {
     let mut found = Vec::new();
     let Some(root) = data.as_object() else {

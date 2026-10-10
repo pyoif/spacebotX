@@ -1,4 +1,5 @@
 use super::state::ApiState;
+use crate::llm::context_window::MODELS_DEV_URL;
 
 use axum::Json;
 use axum::extract::{Query, State};
@@ -36,28 +37,25 @@ pub(super) struct ModelsQuery {
     capability: Option<String>,
 }
 
-#[derive(Deserialize, utoipa::ToSchema)]
-struct ModelsDevProvider {
-    #[allow(dead_code)]
-    id: Option<String>,
-    #[allow(dead_code)]
-    name: Option<String>,
-    #[serde(default)]
-    models: HashMap<String, ModelsDevModel>,
-}
-
+/// One entry in the flat, provider-agnostic models.dev listing.
+///
+/// `models.json` keys the catalogue by namespaced model id
+/// (`zhipuai/glm-5.3-flash`), so the vendor that the provider-nested `api.json`
+/// carried as its outer object key now lives in the key itself.
 #[derive(Deserialize, utoipa::ToSchema)]
 struct ModelsDevModel {
-    #[allow(dead_code)]
-    id: Option<String>,
-    name: String,
+    /// Display name. A few entries omit it, and fall back to the model id.
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     tool_call: bool,
     #[serde(default)]
     reasoning: bool,
     limit: Option<ModelsDevLimit>,
     modalities: Option<ModelsDevModalities>,
-    status: Option<String>,
+    /// `embedding` or `reranking` on the non-chat entries that share this listing.
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -171,69 +169,81 @@ fn extra_models() -> Vec<ModelInfo> {
 }
 
 /// Fetch the full model catalog from models.dev and transform into ModelInfo entries.
+///
+/// Reads `models.json`, the provider-agnostic listing: one flat object whose keys
+/// are namespaced model ids (`zhipuai/glm-5.3-flash`, window at `limit.context`).
+/// The vendor that the provider-nested `api.json` carried as its outer object key
+/// is now the first segment of each key, so the routing ids below are derived from
+/// the key rather than from a provider object.
 async fn fetch_models_dev() -> anyhow::Result<Vec<ModelInfo>> {
     let client = reqwest::Client::new();
     let response = client
-        .get("https://models.dev/api.json")
+        .get(MODELS_DEV_URL)
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await?
         .error_for_status()?;
 
-    let catalog: HashMap<String, ModelsDevProvider> = response.json().await?;
+    let catalog: HashMap<String, ModelsDevModel> = response.json().await?;
     let mut models = Vec::new();
 
-    for (provider_id, provider) in &catalog {
-        for (model_id, model) in &provider.models {
-            if model.status.as_deref() == Some("deprecated") {
-                continue;
-            }
+    for (namespaced_id, model) in &catalog {
+        // An entry with no vendor segment cannot be attributed to a provider.
+        let Some((provider_id, model_id)) = namespaced_id.split_once('/') else {
+            continue;
+        };
 
-            let has_text_output = model
-                .modalities
-                .as_ref()
-                .and_then(|m| m.output.as_ref())
-                .is_some_and(|outputs| outputs.iter().any(|o| o == "text"));
-            if !has_text_output {
-                continue;
-            }
-
-            let (routing_id, routing_provider) =
-                if let Some(spacebot_provider) = direct_provider_mapping(provider_id) {
-                    (
-                        format!("{spacebot_provider}/{model_id}"),
-                        spacebot_provider.to_string(),
-                    )
-                } else if provider_id == "openrouter" {
-                    (format!("openrouter/{model_id}"), "openrouter".into())
-                } else {
-                    (
-                        format!("openrouter/{provider_id}/{model_id}"),
-                        "openrouter".into(),
-                    )
-                };
-
-            let context_window = model.limit.as_ref().map(|l| l.context);
-            let input_audio = model
-                .modalities
-                .as_ref()
-                .and_then(|m| m.input.as_ref())
-                .is_some_and(|inputs| {
-                    inputs
-                        .iter()
-                        .any(|input| input.to_lowercase().contains("audio"))
-                });
-
-            models.push(ModelInfo {
-                id: routing_id,
-                name: model.name.clone(),
-                provider: routing_provider,
-                context_window,
-                tool_call: model.tool_call,
-                reasoning: model.reasoning,
-                input_audio,
-            });
+        // Embeddings and rerankers share this listing with the chat models.
+        if matches!(model.kind.as_deref(), Some("embedding" | "reranking")) {
+            continue;
         }
+
+        // `models.json` carries no `status` field, so a deprecated model can no
+        // longer be filtered out here the way the provider-nested listing allowed.
+        let has_text_output = model
+            .modalities
+            .as_ref()
+            .and_then(|m| m.output.as_ref())
+            .is_some_and(|outputs| outputs.iter().any(|o| o == "text"));
+        if !has_text_output {
+            continue;
+        }
+
+        let (routing_id, routing_provider) =
+            if let Some(spacebot_provider) = direct_provider_mapping(provider_id) {
+                (
+                    format!("{spacebot_provider}/{model_id}"),
+                    spacebot_provider.to_string(),
+                )
+            } else if provider_id == "openrouter" {
+                (format!("openrouter/{model_id}"), "openrouter".into())
+            } else {
+                (
+                    format!("openrouter/{provider_id}/{model_id}"),
+                    "openrouter".into(),
+                )
+            };
+
+        let context_window = model.limit.as_ref().map(|l| l.context);
+        let input_audio = model
+            .modalities
+            .as_ref()
+            .and_then(|m| m.input.as_ref())
+            .is_some_and(|inputs| {
+                inputs
+                    .iter()
+                    .any(|input| input.to_lowercase().contains("audio"))
+            });
+
+        models.push(ModelInfo {
+            id: routing_id,
+            name: model.name.clone().unwrap_or_else(|| model_id.to_string()),
+            provider: routing_provider,
+            context_window,
+            tool_call: model.tool_call,
+            reasoning: model.reasoning,
+            input_audio,
+        });
     }
 
     models.sort_by(|a, b| a.provider.cmp(&b.provider).then(a.name.cmp(&b.name)));
