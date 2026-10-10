@@ -108,9 +108,11 @@ pub fn analyzed_text(content: &str) -> String {
 ///
 /// Every term is double-quoted and the terms are joined with `OR`, matching the
 /// `Operator::Or` that `lance_index::scalar::MatchQuery` uses today. Quoting is
-/// mandatory rather than cosmetic: FTS5's query parser reads `-` as an operator
-/// and `.` as a column separator, so a bare `glm-5.3-flash` is a syntax error
-/// and a bare `word:term` silently becomes a column filter that matches nothing.
+/// mandatory rather than cosmetic: FTS5's query parser reads `-` and `.` as
+/// operators (a bare `glm-5.3-flash` fails with `fts5: syntax error near "."`)
+/// and `word:term` as a column filter — an error while the name is not a column
+/// (`no such column: word`) and a silent restriction when it is. Quoting every
+/// term removes the whole class. Verified against SQLite 3.53.1.
 ///
 /// Each token contributes both its raw and its stemmed form, so a query matches
 /// whichever half of the indexed text happens to carry it.
