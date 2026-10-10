@@ -683,11 +683,79 @@ impl SpacebotModel {
     }
 
     /// Send a prepared request to whichever provider this model belongs to.
+    /// Best-effort: learn this model's real context window from the provider's
+    /// `/models` listing, then from models.dev.
+    ///
+    /// Runs at most once per model per process: the manager memoises an answer,
+    /// and this returns immediately once one is known. Every failure is soft —
+    /// the caller simply keeps the ceiling it already had.
+    async fn maybe_resolve_context_window(&self, provider_config: &ProviderConfig) {
+        if self
+            .llm_manager
+            .context_window_discovered(&self.full_model_name)
+            .is_some()
+        {
+            return;
+        }
+
+        // This lookup is defined for OpenAI-shaped `/models` responses; Anthropic
+        // publishes its listing through a different API that is out of scope.
+        if matches!(provider_config.api_type, ApiType::Anthropic) {
+            return;
+        }
+
+        // Without an instance directory there is nowhere to cache models.dev, and
+        // the configured default is the correct answer anyway.
+        let Some(cache_path) = self.llm_manager.models_dev_cache_path() else {
+            return;
+        };
+
+        let models_url = format!("{}/models", provider_config.base_url.trim_end_matches('/'));
+
+        let resolved = crate::llm::context_window::resolve_context_window(
+            self.llm_manager.http_client(),
+            &models_url,
+            Some(provider_config.api_key.as_str()),
+            &cache_path,
+            &self.model_name,
+        )
+        .await;
+
+        match resolved {
+            Some((window, source)) => {
+                tracing::info!(
+                    model = %self.full_model_name,
+                    window,
+                    source,
+                    "resolved model context window"
+                );
+                self.llm_manager
+                    .note_resolved_context_window(&self.full_model_name, window);
+            }
+            None => {
+                // No usable answer: stay on the default rather than guess between
+                // near neighbours like `glm-5.3` and `glm-5.3-flash`, which are
+                // different models with different windows.
+                let default = self
+                    .llm_manager
+                    .context_ceiling(&self.full_model_name)
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "unset".to_string());
+                tracing::info!(
+                    "no models.dev match for {}, using default {}",
+                    self.model_name,
+                    default
+                );
+            }
+        }
+    }
+
     async fn call_provider(
         &self,
         request: CompletionRequest,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
         let provider_config = self.provider_config_for_current_model().await?;
+        self.maybe_resolve_context_window(&provider_config).await;
 
         match provider_config.api_type {
             ApiType::Anthropic => self.call_anthropic(request, &provider_config).await,
@@ -1301,6 +1369,7 @@ impl SpacebotModel {
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
         let provider_config = self.provider_config_for_current_model().await?;
+        self.maybe_resolve_context_window(&provider_config).await;
 
         match provider_config.api_type {
             ApiType::OpenAiCompletions => self.stream_openai(request, &provider_config).await,

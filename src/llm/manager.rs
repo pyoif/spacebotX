@@ -63,6 +63,9 @@ pub struct LlmManager {
 pub struct ContextCeilings {
     pub default: Option<usize>,
     pub learned: HashMap<String, usize>,
+    /// Windows resolved from the provider's `/models` listing or from models.dev.
+    /// Weaker evidence than a refusal, but far better than guessing.
+    pub discovered: HashMap<String, usize>,
 }
 
 impl ContextCeilings {
@@ -72,10 +75,47 @@ impl ContextCeilings {
     /// refused and says nothing about whether the configured window was too
     /// generous, so the smaller of the two is what a request has to fit.
     pub fn ceiling_for(&self, full_model_name: &str) -> Option<usize> {
-        match (self.learned.get(full_model_name).copied(), self.default) {
-            (Some(learned), Some(default)) => Some(learned.min(default)),
-            (learned, default) => learned.or(default),
+        // A refusal is the strongest evidence, a published window is next, and
+        // the configured default covers everything else. The configured value
+        // stays an upper bound in every combination, so resolution can tighten
+        // a window but never widen it past what was asked for.
+        match (
+            self.learned.get(full_model_name).copied(),
+            self.discovered.get(full_model_name).copied(),
+            self.default,
+        ) {
+            (Some(learned), Some(discovered), Some(default)) => {
+                Some(learned.min(discovered).min(default))
+            }
+            (Some(learned), Some(discovered), None) => Some(learned.min(discovered)),
+            (Some(learned), None, Some(default)) => Some(learned.min(default)),
+            (Some(learned), None, None) => Some(learned),
+            (None, Some(discovered), Some(default)) => Some(discovered.min(default)),
+            (None, Some(discovered), None) => Some(discovered),
+            (None, None, default) => default,
         }
+    }
+
+    /// Fold a window resolved from `/models` or models.dev into the ceilings.
+    ///
+    /// Unlike a refusal this is additive evidence, but recording it is still
+    /// idempotent: the same value is not stored twice, and an implausible number
+    /// is rejected outright so a junk lookup cannot poison the map.
+    pub fn with_discovered(&self, full_model_name: &str, tokens: usize) -> Option<Self> {
+        if !crate::llm::context_window::is_plausible_context_window(tokens) {
+            return None;
+        }
+        if self.discovered.get(full_model_name).copied() == Some(tokens) {
+            return None;
+        }
+
+        let mut discovered = self.discovered.clone();
+        discovered.insert(full_model_name.to_string(), tokens);
+        Some(Self {
+            default: self.default,
+            learned: self.learned.clone(),
+            discovered,
+        })
     }
 
     /// Fold a rejection of `estimated_tokens` into the ceilings.
@@ -103,6 +143,7 @@ impl ContextCeilings {
         Some(Self {
             default: self.default,
             learned,
+            discovered: self.discovered.clone(),
         })
     }
 }
@@ -216,12 +257,48 @@ impl LlmManager {
         self.context_ceilings.rcu(|current| ContextCeilings {
             default: Some(tokens),
             learned: current.learned.clone(),
+            discovered: current.discovered.clone(),
         });
     }
 
     /// What this model's requests must fit inside, if anything is known.
     pub fn context_ceiling(&self, full_model_name: &str) -> Option<usize> {
         self.context_ceilings.load().ceiling_for(full_model_name)
+    }
+
+    /// Whether this model's context window has already been resolved.
+    ///
+    /// The caller uses this to skip the lookup entirely: once a window is known
+    /// the resolution never has to run again for that model.
+    pub fn context_window_discovered(&self, full_model_name: &str) -> Option<usize> {
+        self.context_ceilings
+            .load()
+            .discovered
+            .get(full_model_name)
+            .copied()
+    }
+
+    /// Record a window resolved from the provider's `/models` listing or from
+    /// models.dev.
+    ///
+    /// Read-modify-write under `rcu`, so a refusal recorded concurrently cannot
+    /// be dropped, and an implausible value is refused by `with_discovered`.
+    pub fn note_resolved_context_window(&self, full_model_name: &str, tokens: usize) {
+        self.context_ceilings.rcu(|current| {
+            current
+                .with_discovered(full_model_name, tokens)
+                .unwrap_or_else(|| (**current).clone())
+        });
+    }
+
+    /// Where the cached models.dev payload lives, next to other agent state.
+    ///
+    /// `None` when the manager has no instance directory, in which case the
+    /// models.dev lookup is simply skipped and the configured default stands.
+    pub fn models_dev_cache_path(&self) -> Option<PathBuf> {
+        self.instance_dir
+            .as_ref()
+            .map(|dir| dir.join("models_dev_api.json"))
     }
 
     /// Record that a request of this size was refused for exceeding the window.
