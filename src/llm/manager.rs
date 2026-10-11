@@ -103,6 +103,41 @@ impl ContextCeilings {
         }
     }
 
+    /// The smallest resolved window across `models`, ignoring the fallback.
+    ///
+    /// Used to give the *agent* one window rather than a per-surface one: the
+    /// surfaces share a single budget, so the number handed to all of them has
+    /// to be safe for the smallest of their real windows.
+    ///
+    /// A `configured` pin short-circuits: an operator who set a window meant it,
+    /// and it outranks discovery for every model, so the minimum is that value.
+    ///
+    /// Models with no `discovered` and no `learned` entry are skipped rather
+    /// than counted at `default`. The default is a placeholder, not a
+    /// measurement, and letting it vote would clamp the whole agent back to
+    /// 128k whenever a single surface's window went unresolved — the precise
+    /// loss this exists to prevent. Returns `None` when nothing is known.
+    pub fn min_resolved<'a, I>(&self, models: I) -> Option<usize>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        if let Some(pinned) = self.configured {
+            return Some(pinned);
+        }
+
+        let mut smallest: Option<usize> = None;
+        for model in models {
+            if !self.discovered.contains_key(model) && !self.learned.contains_key(model) {
+                continue;
+            }
+            let Some(ceiling) = self.ceiling_for(model) else {
+                continue;
+            };
+            smallest = Some(smallest.map_or(ceiling, |current: usize| current.min(ceiling)));
+        }
+        smallest
+    }
+
     /// Fold a window resolved from `/models` or models.dev into the ceilings.
     ///
     /// Unlike a refusal this is additive evidence, but recording it is still
@@ -312,6 +347,108 @@ impl LlmManager {
                 .with_discovered(full_model_name, tokens)
                 .unwrap_or_else(|| (**current).clone())
         });
+    }
+
+    /// The smallest window resolved for any of `models`.
+    ///
+    /// Discovery reaches the rest of the agent through here. Everything that
+    /// budgets — compaction, branch turns, the status block — reads one window
+    /// off `RuntimeConfig`, so the number that reaches them has to be safe for
+    /// every surface: hence the minimum rather than the channel's own window.
+    pub fn min_resolved_ceiling<'a, I>(&self, models: I) -> Option<usize>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        self.context_ceilings.load().min_resolved(models)
+    }
+
+    /// Learn the context windows for `models` before the first request needs
+    /// them.
+    ///
+    /// Request-time resolution (`SpacebotModel::maybe_resolve_context_window`)
+    /// only runs when a surface actually sends, so every turn before that reads
+    /// the 128k placeholder — including the ones compaction and the status
+    /// block budget against. Resolving once, at startup, means the first
+    /// request of every surface is already sized correctly.
+    ///
+    /// Best-effort and bounded throughout: each lookup carries the endpoint
+    /// client's own timeout, the whole sweep is capped by `budget`, and a model
+    /// that cannot be resolved keeps the ceiling it already had. Windows learned
+    /// before the cap are recorded regardless, so a partial sweep still helps;
+    /// boot is never blocked on a slow provider. Returns how many were learned.
+    pub async fn warm_context_windows(
+        &self,
+        models: &[String],
+        budget: std::time::Duration,
+    ) -> usize {
+        let learned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let sweep = {
+            let learned = Arc::clone(&learned);
+            async move {
+                for model in models {
+                    // Already known — a reload or a previous sweep got there.
+                    if self.context_window_discovered(model).is_some() {
+                        continue;
+                    }
+                    let Ok((provider_id, model_id)) = self.resolve_model(model) else {
+                        continue;
+                    };
+                    let Ok(provider) = self.get_provider(&provider_id) else {
+                        continue;
+                    };
+                    // Anthropic publishes its listing through a different API,
+                    // so there is nothing here shaped like `/models` to read.
+                    if matches!(provider.api_type, ApiType::Anthropic) {
+                        continue;
+                    }
+                    // Without an instance directory there is nowhere to cache
+                    // models.dev, and the configured default stands anyway.
+                    let Some(cache_path) = self.models_dev_cache_path() else {
+                        continue;
+                    };
+
+                    let models_url =
+                        crate::llm::routing::build_endpoint(&provider.base_url, "/models");
+                    let resolved = crate::llm::context_window::resolve_context_window(
+                        &self.http_client,
+                        &models_url,
+                        Some(provider.api_key.as_str()),
+                        &cache_path,
+                        &model_id,
+                    )
+                    .await;
+
+                    match resolved {
+                        Some((window, source)) => {
+                            tracing::info!(
+                                model = %model,
+                                window,
+                                source,
+                                "resolved model context window"
+                            );
+                            self.note_resolved_context_window(model, window);
+                            learned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        None => {
+                            tracing::debug!(
+                                model = %model,
+                                "no context window resolved at startup"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+
+        if tokio::time::timeout(budget, sweep).await.is_err() {
+            tracing::warn!(
+                models = models.len(),
+                "context discovery timed out; keeping the windows resolved so far"
+            );
+        }
+
+        learned.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Where the cached models.dev payload lives, next to other agent state.
@@ -705,7 +842,8 @@ impl LlmManager {
 
 #[cfg(test)]
 mod context_ceiling_tests {
-    use super::ContextCeilings;
+    use super::{ContextCeilings, LlmManager};
+    use crate::config::LlmConfig;
 
     #[test]
     fn nothing_is_enforced_until_a_ceiling_is_known() {
@@ -724,6 +862,87 @@ mod context_ceiling_tests {
             Some(128_000)
         );
         assert_eq!(ceilings.ceiling_for("anything/else"), Some(128_000));
+    }
+
+    /// The agent-wide window is the smallest one any of its models resolved to,
+    /// because the surfaces share a single budget: sizing it for the biggest
+    /// would let the others overrun their real windows.
+    #[test]
+    fn the_agent_window_is_the_smallest_resolved_one() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            discovered: std::collections::HashMap::from([
+                ("je/deepseek-v4.1-flash".to_string(), 1_000_000usize),
+                ("je/glm-5.3-flash".to_string(), 200_000),
+                ("je/cortex".to_string(), 400_000),
+            ]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ceilings.min_resolved([
+                "je/deepseek-v4.1-flash",
+                "je/glm-5.3-flash",
+                "je/cortex"
+            ]),
+            Some(200_000)
+        );
+    }
+
+    /// A model nobody learned anything about must not vote. The default is a
+    /// placeholder, and counting it would clamp the whole agent back to 128k
+    /// whenever a single surface's window went unresolved — the exact loss this
+    /// exists to prevent.
+    #[test]
+    fn an_unresolved_model_does_not_drag_the_agent_window_to_the_default() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            discovered: std::collections::HashMap::from([(
+                "je/deepseek-v4.1-flash".to_string(),
+                1_000_000usize,
+            )]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ceilings.min_resolved(["je/deepseek-v4.1-flash", "je/never-resolved"]),
+            Some(1_000_000),
+            "the placeholder default must not join the minimum"
+        );
+    }
+
+    /// An operator who pinned a window meant it, so the pin outranks discovery
+    /// here exactly as it does at request time.
+    #[test]
+    fn a_configured_pin_outranks_discovery_for_the_agent_window() {
+        let ceilings = ContextCeilings {
+            configured: Some(64_000),
+            default: Some(128_000),
+            discovered: std::collections::HashMap::from([(
+                "je/deepseek-v4.1-flash".to_string(),
+                1_000_000usize,
+            )]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ceilings.min_resolved(["je/deepseek-v4.1-flash"]),
+            Some(64_000)
+        );
+    }
+
+    /// Nothing known at all resolves to `None`, which is what leaves the
+    /// configured value standing — the graceful path a failed or timed-out
+    /// startup sweep lands on.
+    #[test]
+    fn no_discovery_anywhere_yields_no_agent_window() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            ..Default::default()
+        };
+
+        assert_eq!(ceilings.min_resolved(["je/deepseek-v4.1-flash"]), None);
+        assert_eq!(ceilings.min_resolved(std::iter::empty()), None);
     }
 
     /// The case that killed two workers: the backend enforced far less than the

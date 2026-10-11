@@ -197,6 +197,42 @@ impl RuntimeConfig {
 
     /// Reload tunable config values from a freshly parsed Config.
     ///
+    /// Adopt the smallest context window discovered for this agent's models.
+    ///
+    /// Everything that budgets — compaction, branch turns, the status block —
+    /// reads [`RuntimeConfig::context_window`], so a window learned from a
+    /// provider's `/models` listing or from models.dev only reaches them through
+    /// this field. Without it, discovery changes what a *request* is trimmed to
+    /// while compaction still aims at the 128k placeholder, which is how a
+    /// conversation that fits the real window still loses its oldest turns.
+    ///
+    /// The value adopted is the minimum across the agent's routing models
+    /// because they share one budget: sizing it for the channel alone would let
+    /// every other surface overrun the smallest of their real windows.
+    ///
+    /// Precedence matches the request-level resolver — a `context_window` the
+    /// operator pinned wins, then the smallest discovered window, then whatever
+    /// configuration resolved to. When nothing has been discovered the field is
+    /// left untouched, so the configured value stands and a failed lookup costs
+    /// nothing. Returns the window adopted, if any.
+    pub fn apply_discovered_context_window(
+        &self,
+        llm_manager: &crate::llm::LlmManager,
+    ) -> Option<usize> {
+        let routing = self.routing.load();
+        let models = [
+            routing.channel.as_str(),
+            routing.branch.as_str(),
+            routing.worker.as_str(),
+            routing.compactor.as_str(),
+            routing.cortex.as_str(),
+        ];
+
+        let resolved = llm_manager.min_resolved_ceiling(models)?;
+        self.context_window.store(Arc::new(resolved));
+        Some(resolved)
+    }
+
     /// Finds the matching agent by ID, re-resolves it against defaults, and
     /// swaps all reloadable fields. Does not handle API keys (those are
     /// reloaded via LlmManager), DB paths, messaging adapters, or agent

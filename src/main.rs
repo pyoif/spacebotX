@@ -2413,6 +2413,45 @@ async fn initialize_agents(
             skills,
         ));
 
+        // Learn this agent's context windows before its first turn.
+        //
+        // Request-time resolution only runs when a surface actually sends, so
+        // without this the earliest requests — and every compaction and status
+        // block before them — budget against the shipped 128k placeholder
+        // instead of the model's real window. Bounded and best-effort: a slow or
+        // unreachable provider costs the budget below and leaves the configured
+        // value standing, so boot never hangs here.
+        {
+            let routing = agent_config.routing.clone();
+            let mut models = vec![
+                routing.channel,
+                routing.branch,
+                routing.worker,
+                routing.compactor,
+                routing.cortex,
+            ];
+            models.sort();
+            models.dedup();
+
+            let learned = llm_manager
+                .warm_context_windows(&models, std::time::Duration::from_secs(8))
+                .await;
+
+            match runtime_config.apply_discovered_context_window(llm_manager) {
+                Some(window) => tracing::info!(
+                    agent = %agent_config.id,
+                    window,
+                    learned,
+                    "agent context window resolved from discovery"
+                ),
+                None => tracing::info!(
+                    agent = %agent_config.id,
+                    window = **runtime_config.context_window.load(),
+                    "no context window discovered for agent; keeping the configured one"
+                ),
+            }
+        }
+
         runtime_config.set_settings(settings_store.clone());
         let skill_usage_store = Arc::new(spacebot::skills::SkillUsageStore::new(db.sqlite.clone()));
         runtime_config.set_skill_usage(skill_usage_store.clone());
