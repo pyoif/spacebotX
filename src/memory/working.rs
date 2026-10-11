@@ -526,9 +526,14 @@ impl WorkingMemoryStore {
 // Rendering (Layers 2 + 3)
 // ---------------------------------------------------------------------------
 
-/// Rough token estimate: ~0.75 tokens per character (conservative for English).
+/// Rough token estimate: ~4 characters per token (typical for English text).
+///
+/// The previous heuristic (`len * 3 / 4`, i.e. ~0.75 tokens per *character*)
+/// over-estimated by roughly 3x, which caused budget-split rendering to
+/// under-fill every section. All call sites in this module use the value only
+/// for budget comparisons, so the corrected math is applied globally here.
 fn estimate_tokens(text: &str) -> usize {
-    text.len() * 3 / 4
+    text.len() / 4
 }
 
 /// Render Layer 2: Working Memory section for the channel system prompt.
@@ -555,6 +560,13 @@ pub async fn render_working_memory(
     let mut output = String::with_capacity(2048);
     let mut tokens_used: usize = 0;
     let today_budget = budget * 60 / 100; // 60% for today
+    // Reserve a slice of today's budget for the raw unsynthesized event tail.
+    // Synthesis paragraphs render first; without this reserve they can consume
+    // the entire day budget, leaving the tail loop to break on its very first
+    // line and render "(0 of N events shown)". The floor guarantees a tiny
+    // budget still leaves room for at least one tail event.
+    let today_tail_reserve = (today_budget * 25 / 100).max(1);
+    let synthesis_budget = today_budget.saturating_sub(today_tail_reserve);
     let yesterday_budget = budget * 20 / 100; // next 20% for yesterday
     let week_budget = budget * 20 / 100; // remaining 20% for this week
 
@@ -574,7 +586,7 @@ pub async fn render_working_memory(
             .to_string();
         let block = format!("[{time_label}] {}\n", synthesis.summary);
         let block_tokens = estimate_tokens(&block);
-        if tokens_used + block_tokens > today_budget {
+        if tokens_used + block_tokens > synthesis_budget {
             break;
         }
         write!(output, "{block}").ok();
@@ -1769,6 +1781,62 @@ mod tests {
         assert!(
             event_lines < 50,
             "should be capped by token budget, got {event_lines}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_render_working_memory_tail_survives_synthesis_starvation() {
+        // Regression: intra-day synthesis paragraphs render before the raw
+        // unsynthesized tail. Before the fix they shared the whole day budget,
+        // so a large enough synthesis block consumed it entirely and the tail
+        // loop broke on its first line — rendering "(0 of N events shown)".
+        let store = setup_test_store().await;
+        let today = store.today();
+        let mut config = test_config();
+        config.context_token_budget = 400; // today budget = 240
+
+        // Fill (and overflow) the synthesis region with long paragraphs.
+        for i in 0..5 {
+            let start = Utc::now() - chrono::Duration::hours(6 - i);
+            let end = Utc::now() - chrono::Duration::hours(5 - i);
+            let long_summary = format!(
+                "Batch {i}: {}",
+                "completed a large amount of work across many files ".repeat(20)
+            );
+            store
+                .save_intraday_synthesis(&today, start, end, &long_summary, 8)
+                .await
+                .unwrap();
+        }
+
+        // Events after the last synthesis — these are the raw tail.
+        for i in 0..5 {
+            let event = WorkingMemoryEvent {
+                id: Uuid::new_v4().to_string(),
+                event_type: WorkingMemoryEventType::WorkerCompleted,
+                timestamp: Utc::now(),
+                channel_id: Some("chan-1".to_string()),
+                user_id: None,
+                summary: format!("Tail event {i}"),
+                detail: None,
+                importance: 0.6,
+                day: today.clone(),
+            };
+            insert_event(&store.pool, &event).await.unwrap();
+        }
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        let event_lines = rendered.lines().filter(|l| l.starts_with("- ")).count();
+        assert!(
+            event_lines >= 1,
+            "raw tail must render at least one event even when syntheses fill the budget, got {event_lines}\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("(0 of "),
+            "must not disclose zero events shown while events exist\n{rendered}"
         );
     }
 
