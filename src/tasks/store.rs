@@ -1437,6 +1437,12 @@ impl TaskStore {
             .await
             .context("failed to update task")?;
 
+        // R7-lite: a status change rewrites the active-tasks block inside the
+        // cached prefix. Tagged only when the status actually moved.
+        if next_status != current.status {
+            crate::llm::cache_stats::tag(crate::llm::cache_stats::CacheEvent::TaskTransition);
+        }
+
         let updated = sqlx::query(&format!(
             "{SELECT_COLUMNS} FROM tasks WHERE task_number = ?"
         ))

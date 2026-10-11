@@ -339,6 +339,21 @@ impl SpacebotModel {
 
 /// Normalized usage for a record, priced with the same table as billing.
 impl SpacebotModel {
+    /// The surface label a cache-usage line is keyed by.
+    ///
+    /// The process that sent the request — channel, worker, branch, cortex —
+    /// is the unit the gap detector works in: two requests from the same
+    /// surface share a conversation and therefore a cache, while two different
+    /// surfaces do not. The debug context carries the same vocabulary the
+    /// prompt records use, so the log joins against them.
+    fn cache_surface(&self) -> String {
+        self.debug_context
+            .as_ref()
+            .and_then(|context| context.process.as_ref().map(|process| process.kind.clone()))
+            .or_else(|| self.process_type.clone())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     fn usage_ref(&self, body: &serde_json::Value) -> crate::llm::record::UsageRef {
         let extended = if self.provider == "anthropic" {
             crate::llm::usage::ExtendedUsage::from_anthropic_body(body)
@@ -1276,6 +1291,21 @@ impl CompletionModel for SpacebotModel {
                 .add(extended, &self.full_model_name, &self.provider, cost);
         }
 
+        // R7-lite: log the cache outcome of this call. Only a successful
+        // response carries usage, and a line with unknown usage is worse than
+        // no line — it is indistinguishable from a provider that stopped
+        // reporting — so failures are not logged.
+        if let Ok(ref response) = result {
+            crate::llm::cache_stats::record(
+                &self.cache_surface(),
+                &self.full_model_name,
+                crate::llm::cache_stats::CacheUsage::from_body(
+                    &self.provider,
+                    &response.raw_response.body,
+                ),
+            );
+        }
+
         if let Some((started_at, clock)) = capture_started {
             let (response, usage) = match &result {
                 Ok(response) => (
@@ -1904,6 +1934,9 @@ impl SpacebotModel {
         let stream_accumulator = self.usage_accumulator.clone();
         let stream_model_name = self.full_model_name.clone();
         let stream_provider = self.provider.clone();
+        // R7-lite: captured before the generator so the streaming usage hook
+        // can label its line with the surface that sent the request.
+        let stream_surface = self.cache_surface();
         let stream = async_stream::stream! {
             let mut stream = response.bytes_stream();
             let mut block_buffer = String::new();
@@ -2030,7 +2063,7 @@ impl SpacebotModel {
                     }
                 };
 
-                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider).await;
+                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
                 yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                     body: response_body,
                     usage: Some(parsed_response.usage),
@@ -2063,7 +2096,7 @@ impl SpacebotModel {
             if let Some(message_id) = parsed_response.message_id {
                 yield Ok(RawStreamingChoice::MessageId(message_id));
             }
-            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider).await;
+            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: response_body,
                 usage: Some(parsed_response.usage),
@@ -2403,6 +2436,9 @@ impl SpacebotModel {
         let stream_accumulator = self.usage_accumulator.clone();
         let stream_model_name = self.full_model_name.clone();
         let stream_provider = self.provider.clone();
+        // R7-lite: captured before the generator so the streaming usage hook
+        // can label its line with the surface that sent the request.
+        let stream_surface = self.cache_surface();
         let stream = async_stream::stream! {
             let mut stream = response.bytes_stream();
             let mut block_buffer = String::new();
@@ -2515,7 +2551,7 @@ impl SpacebotModel {
                     }
                 };
 
-                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider).await;
+                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
                 yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                     body: response_body,
                     usage: Some(parsed_response.usage),
@@ -2549,7 +2585,7 @@ impl SpacebotModel {
                 yield Ok(RawStreamingChoice::MessageId(message_id));
             }
 
-            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider).await;
+            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: response_body,
                 usage: Some(parsed_response.usage),
@@ -2567,7 +2603,18 @@ async fn record_streaming_usage(
     body: &serde_json::Value,
     model_name: &str,
     provider: &str,
+    surface: &str,
 ) {
+    // R7-lite: streaming is where the channel's tokens come from, so the cache
+    // outcome is logged here — the one point every streaming provider's final
+    // usage block passes through. Unlike the non-streaming path this is the
+    // only place the body is visible, so it is logged unconditionally.
+    crate::llm::cache_stats::record(
+        surface,
+        model_name,
+        crate::llm::cache_stats::CacheUsage::from_body(provider, body),
+    );
+
     if let Some(acc) = accumulator {
         let extended = if provider == "anthropic" {
             crate::llm::usage::ExtendedUsage::from_anthropic_body(body)

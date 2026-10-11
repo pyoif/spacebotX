@@ -91,6 +91,10 @@ impl MemoryStore {
         .await
         .with_context(|| format!("failed to save memory {}", memory.id))?;
 
+        // R7-lite: a new memory rewrites the store block inside the cached
+        // prefix, so the next request's cache miss is attributable to this.
+        crate::llm::cache_stats::tag(crate::llm::cache_stats::CacheEvent::MemoryWrite);
+
         #[cfg(feature = "metrics")]
         {
             let agent_label = if self.agent_id.is_empty() {

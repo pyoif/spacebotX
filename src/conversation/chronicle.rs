@@ -477,6 +477,11 @@ impl ChronicleStore {
             return Err(error);
         }
 
+        // R7-lite: a committed checkpoint rewrites the chronicle anchor inside
+        // the cached prefix. Only a real commit is tagged — the superseded
+        // paths above returned before reaching here.
+        crate::llm::cache_stats::tag(crate::llm::cache_stats::CacheEvent::ChronicleWrite);
+
         Ok(CommitOutcome::Committed(Box::new(ChronicleCheckpoint {
             id,
             channel_id: new.channel_id.clone(),

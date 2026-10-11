@@ -562,18 +562,29 @@ impl ProcessControlRegistry {
         status: impl Into<String>,
         control: WorkerRuntimeControl,
     ) -> Result<WorkerAdmissionToken, WorkerRegistryError> {
-        self.register_worker(
-            reservation,
-            provenance,
-            backend,
-            interactive,
-            WorkerRuntimeState::Starting,
-            Some(initial_operation),
-            status.into(),
-            0,
-            control,
-        )
-        .await
+        let admitted = self
+            .register_worker(
+                reservation,
+                provenance,
+                backend,
+                interactive,
+                WorkerRuntimeState::Starting,
+                Some(initial_operation),
+                status.into(),
+                0,
+                control,
+            )
+            .await;
+
+        // R7-lite: an admitted worker is recorded in the channel's own prompt.
+        // Only a successful admission counts — a rejected reservation never
+        // reached the prompt, so tagging it would explain a dip that cannot
+        // have happened there.
+        if admitted.is_ok() {
+            crate::llm::cache_stats::tag(crate::llm::cache_stats::CacheEvent::WorkerSpawn);
+        }
+
+        admitted
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -2292,6 +2292,12 @@ async fn initialize_agents(
             settings_store.prompt_debug_capture(),
         ));
 
+        // R7-lite: per-request prompt-cache usage log. Measurement only — it
+        // reads the usage the providers already return and never touches
+        // request assembly. Small and tag-free for that reason; the actual
+        // line is appended off the turn.
+        spacebot::llm::cache_stats::init(&agent_config.data_dir);
+
         // Per-agent memory system. Search vectors live in the same SQLite
         // database as the memories they describe, so there is no second store to
         // open and nothing to fall out of sync: `MemorySearch::new` derives both
