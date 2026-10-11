@@ -1040,10 +1040,20 @@ async fn run(
 
     // The hard ceiling every request is trimmed to fit. Compaction aims at the
     // same number, but it only runs where a loop yields; this is enforced on
-    // the request itself, so a loop that never yields cannot exceed it. Raising
-    // `context_window` raises both — set it to what the backend actually
-    // enforces, which is not always what the model advertises.
+    // the request itself, so a loop that never yields cannot exceed it.
+    //
+    // This number is a fallback, not an upper bound: a window resolved from the
+    // provider's `/models` listing or from models.dev outranks it, because the
+    // shipped default is a placeholder rather than a belief about the model.
+    // Only a `context_window` the operator actually set is a decision, and that
+    // is what `set_configured_context_ceiling` records — it wins over discovery.
     llm_manager.set_default_context_ceiling(config.defaults.context_window);
+    llm_manager.set_configured_context_ceiling(
+        config
+            .defaults
+            .context_window_explicit
+            .then_some(config.defaults.context_window),
+    );
 
     // Shared embedding model (stateless, agent-agnostic)
     let embedding_cache_dir = config.instance_dir.join("embedding_cache");
@@ -1926,6 +1936,12 @@ async fn run(
                                 // built after setup would send unbounded.
                                 new_llm_manager.set_default_context_ceiling(
                                     new_config.defaults.context_window,
+                                );
+                                new_llm_manager.set_configured_context_ceiling(
+                                    new_config
+                                        .defaults
+                                        .context_window_explicit
+                                        .then_some(new_config.defaults.context_window),
                                 );
                                 api_state.set_llm_manager(new_llm_manager.clone()).await;
                                 // Update agent_humans from the reloaded config

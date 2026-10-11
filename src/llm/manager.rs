@@ -56,11 +56,20 @@ pub struct LlmManager {
 ///
 /// A published context window is not what a backend enforces: the same model
 /// answers to a different ceiling depending on which API it is reached through,
-/// and that ceiling moves without notice. `default` is the configured fallback;
-/// `learned` holds what a provider has demonstrated by refusing a request of
-/// known size.
+/// and that ceiling moves without notice. `configured` holds a window an
+/// operator pinned, `default` is the built-in fallback, and `learned` holds what
+/// a provider has demonstrated by refusing a request of known size.
 #[derive(Debug, Default, Clone)]
 pub struct ContextCeilings {
+    /// The window an operator pinned in configuration, when they set one.
+    ///
+    /// A pinned number is a decision, so it outranks anything discovered. It is
+    /// kept apart from `default` because the resolved configuration cannot tell
+    /// an operator's explicit number from the built-in fallback, and the two
+    /// must not be treated alike: one wins over discovery, the other yields.
+    pub configured: Option<usize>,
+    /// Last-resort fallback: used only when nothing was pinned, discovered, or
+    /// learned from a refusal.
     pub default: Option<usize>,
     pub learned: HashMap<String, usize>,
     /// Windows resolved from the provider's `/models` listing or from models.dev.
@@ -71,28 +80,26 @@ pub struct ContextCeilings {
 impl ContextCeilings {
     /// What this model's requests must fit inside, if anything is known.
     ///
-    /// A refusal only ever tightens: it proves the ceiling sits below the size
-    /// refused and says nothing about whether the configured window was too
-    /// generous, so the smaller of the two is what a request has to fit.
+    /// Precedence, strongest first: an explicitly pinned `configured` window, a
+    /// `discovered` one from `/models` or models.dev, then the built-in
+    /// `default`. Discovery outranks the fallback because the fallback is a
+    /// placeholder, not a belief about the model: capping a 1M-token model at
+    /// the shipped 128k default trims conversations the backend would have
+    /// accepted, which is a silent loss of context on every long turn.
+    ///
+    /// A refusal is measurement rather than preference, so `learned` still caps
+    /// whatever the other three agree on: it proves the ceiling sits below the
+    /// size that was refused, and nothing else measures that.
     pub fn ceiling_for(&self, full_model_name: &str) -> Option<usize> {
-        // A refusal is the strongest evidence, a published window is next, and
-        // the configured default covers everything else. The configured value
-        // stays an upper bound in every combination, so resolution can tighten
-        // a window but never widen it past what was asked for.
-        match (
-            self.learned.get(full_model_name).copied(),
-            self.discovered.get(full_model_name).copied(),
-            self.default,
-        ) {
-            (Some(learned), Some(discovered), Some(default)) => {
-                Some(learned.min(discovered).min(default))
-            }
-            (Some(learned), Some(discovered), None) => Some(learned.min(discovered)),
-            (Some(learned), None, Some(default)) => Some(learned.min(default)),
-            (Some(learned), None, None) => Some(learned),
-            (None, Some(discovered), Some(default)) => Some(discovered.min(default)),
-            (None, Some(discovered), None) => Some(discovered),
-            (None, None, default) => default,
+        let declared = self
+            .configured
+            .or_else(|| self.discovered.get(full_model_name).copied())
+            .or(self.default);
+
+        match (self.learned.get(full_model_name).copied(), declared) {
+            (Some(learned), Some(declared)) => Some(learned.min(declared)),
+            (Some(learned), None) => Some(learned),
+            (None, declared) => declared,
         }
     }
 
@@ -112,6 +119,7 @@ impl ContextCeilings {
         let mut discovered = self.discovered.clone();
         discovered.insert(full_model_name.to_string(), tokens);
         Some(Self {
+            configured: self.configured,
             default: self.default,
             learned: self.learned.clone(),
             discovered,
@@ -141,6 +149,7 @@ impl ContextCeilings {
         let mut learned = self.learned.clone();
         learned.insert(full_model_name.to_string(), ceiling);
         Some(Self {
+            configured: self.configured,
             default: self.default,
             learned,
             discovered: self.discovered.clone(),
@@ -255,7 +264,21 @@ impl LlmManager {
     /// must not be dropped by this write, and vice versa.
     pub fn set_default_context_ceiling(&self, tokens: usize) {
         self.context_ceilings.rcu(|current| ContextCeilings {
+            configured: current.configured,
             default: Some(tokens),
+            learned: current.learned.clone(),
+            discovered: current.discovered.clone(),
+        });
+    }
+
+    /// Pin the context window an operator set explicitly in configuration.
+    ///
+    /// `None` clears the pin, which is what an unset `context_window` means:
+    /// the resolved value is then only a fallback and yields to discovery.
+    pub fn set_configured_context_ceiling(&self, tokens: Option<usize>) {
+        self.context_ceilings.rcu(|current| ContextCeilings {
+            configured: tokens,
+            default: current.default,
             learned: current.learned.clone(),
             discovered: current.discovered.clone(),
         });
@@ -793,5 +816,111 @@ mod context_ceiling_tests {
             ..Default::default()
         };
         assert!(ceilings.with_overflow("m", 0).is_none());
+    }
+
+    /// A pinned window is a deliberate statement about what this deployment
+    /// enforces, so it stands even when discovery says the model holds less.
+    #[test]
+    fn a_pinned_window_beats_a_smaller_discovered_one() {
+        let ceilings = ContextCeilings {
+            configured: Some(1_000_000),
+            default: Some(128_000),
+            ..Default::default()
+        }
+        .with_discovered("zhipuai/glm-5.3-flash", 200_000)
+        .expect("the first discovery is a change");
+
+        assert_eq!(
+            ceilings.ceiling_for("zhipuai/glm-5.3-flash"),
+            Some(1_000_000),
+            "an explicitly configured window outranks a discovered one"
+        );
+    }
+
+    /// The case this flip exists for: the fallback is a placeholder, not a
+    /// belief about the model, so it must not trim what the provider advertises.
+    #[test]
+    fn a_discovered_window_beats_the_default_fallback() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            ..Default::default()
+        }
+        .with_discovered("deepseek/deepseek-v4.1-flash", 1_000_000)
+        .expect("the first discovery is a change");
+
+        assert_eq!(
+            ceilings.ceiling_for("deepseek/deepseek-v4.1-flash"),
+            Some(1_000_000),
+            "discovery must not be trimmed down to the fallback"
+        );
+        // A model nobody resolved still lands on the fallback.
+        assert_eq!(ceilings.ceiling_for("unresolved/model"), Some(128_000));
+    }
+
+    /// With neither a pin nor a discovery, the fallback is the answer — and
+    /// with no fallback either, nothing is enforced.
+    #[test]
+    fn an_unresolved_model_falls_back_to_the_default() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            ..Default::default()
+        };
+        assert_eq!(ceilings.ceiling_for("unresolved/model"), Some(128_000));
+        assert_eq!(ContextCeilings::default().ceiling_for("anything"), None);
+    }
+
+    /// A refusal is measurement, not preference, so it still caps a window that
+    /// discovery reported.
+    #[test]
+    fn a_refusal_still_caps_a_discovered_window() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            ..Default::default()
+        }
+        .with_discovered("deepseek/deepseek-v4.1-flash", 1_000_000)
+        .expect("the first discovery is a change");
+
+        let learned = ceilings
+            .with_overflow("deepseek/deepseek-v4.1-flash", 257_963)
+            .expect("a refusal below the discovered window teaches something");
+
+        assert_eq!(
+            learned.ceiling_for("deepseek/deepseek-v4.1-flash"),
+            Some(232_166),
+            "the learned ceiling sits below the size that was refused"
+        );
+    }
+
+    /// Clearing the pin is what an unset `context_window` means: precedence
+    /// hands back to discovery.
+    #[test]
+    fn clearing_the_pin_hands_precedence_back_to_discovery() {
+        let ceilings = ContextCeilings {
+            configured: Some(200_000),
+            default: Some(128_000),
+            ..Default::default()
+        }
+        .with_discovered("m", 1_000_000)
+        .expect("the first discovery is a change");
+        assert_eq!(ceilings.ceiling_for("m"), Some(200_000));
+
+        let cleared = ContextCeilings {
+            configured: None,
+            ..ceilings.clone()
+        };
+        assert_eq!(cleared.ceiling_for("m"), Some(1_000_000));
+    }
+
+    /// A junk lookup must not poison the map, so implausible numbers are still
+    /// refused before they can outrank the fallback.
+    #[test]
+    fn an_implausible_discovered_window_is_rejected() {
+        let ceilings = ContextCeilings {
+            default: Some(128_000),
+            ..Default::default()
+        };
+        assert!(ceilings.with_discovered("m", 40_000_000).is_none());
+        assert!(ceilings.with_discovered("m", 512).is_none());
+        assert_eq!(ceilings.ceiling_for("m"), Some(128_000));
     }
 }

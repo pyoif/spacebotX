@@ -1660,6 +1660,7 @@ impl Config {
                 .defaults
                 .context_window
                 .unwrap_or(base_defaults.context_window),
+            context_window_explicit: toml.defaults.context_window.is_some(),
             tool_use_enforcement: toml
                 .defaults
                 .tool_use_enforcement

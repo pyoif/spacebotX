@@ -639,7 +639,16 @@ pub struct DefaultsConfig {
     pub max_concurrent_workers: usize,
     pub max_turns: usize,
     pub branch_max_turns: usize,
+    /// The window every request is trimmed to fit.
     pub context_window: usize,
+    /// Whether `context_window` was set in the configuration file rather than
+    /// left to the built-in default.
+    ///
+    /// The distinction matters to context-window resolution: an explicit number
+    /// is a statement about what this deployment enforces and outranks anything
+    /// discovered, while the default is only a placeholder that yields to a
+    /// window discovered from the provider.
+    pub context_window_explicit: bool,
     pub compaction: CompactionConfig,
     pub memory_persistence: MemoryPersistenceConfig,
     pub coalesce: CoalesceConfig,
@@ -1721,6 +1730,7 @@ impl Default for DefaultsConfig {
             max_turns: 5,
             branch_max_turns: 50,
             context_window: 128_000,
+            context_window_explicit: false,
             compaction: CompactionConfig::default(),
             memory_persistence: MemoryPersistenceConfig::default(),
             coalesce: CoalesceConfig::default(),
