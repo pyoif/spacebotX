@@ -151,7 +151,8 @@ impl CacheUsage {
             input = Some(hit + miss);
         }
 
-        let mut cached = hit.or_else(|| token_count(usage.pointer("/prompt_tokens_details/cached_tokens")));
+        let mut cached =
+            hit.or_else(|| token_count(usage.pointer("/prompt_tokens_details/cached_tokens")));
         if cached.is_none()
             && let (Some(input), Some(miss)) = (input, miss)
         {
@@ -323,7 +324,12 @@ pub fn record(surface: &str, model: &str, usage: CacheUsage) {
     let now = Utc::now();
     let (events, gap_secs) = REGISTRY
         .get()
-        .and_then(|registry| registry.lock().ok().map(|mut held| held.observe(surface, now)))
+        .and_then(|registry| {
+            registry
+                .lock()
+                .ok()
+                .map(|mut held| held.observe(surface, now))
+        })
         .unwrap_or_default();
 
     let line = CacheStatsLine {
@@ -511,10 +517,7 @@ mod tests {
             "usage": { "input_tokens": 100, "cache_read_input_tokens": 900 }
         });
 
-        assert_eq!(
-            CacheUsage::from_body("openai", &openai).cached,
-            Some(900)
-        );
+        assert_eq!(CacheUsage::from_body("openai", &openai).cached, Some(900));
         assert_eq!(
             CacheUsage::from_body("anthropic", &anthropic).cached,
             Some(900)
@@ -574,10 +577,7 @@ mod tests {
         };
 
         let jsonl = line.to_jsonl().expect("serialize");
-        assert!(
-            !jsonl.contains('\n'),
-            "a record must never span two lines"
-        );
+        assert!(!jsonl.contains('\n'), "a record must never span two lines");
 
         let parsed: CacheStatsLine = serde_json::from_str(&jsonl).expect("parse");
         assert_eq!(parsed, line);
