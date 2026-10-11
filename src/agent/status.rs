@@ -357,6 +357,36 @@ impl StatusBlock {
         }
     }
 
+    /// Drop active-branch entries that are no longer live.
+    ///
+    /// The branch listing is otherwise event-driven: a branch appears when it is
+    /// spawned and disappears when its terminal `BranchResult` is processed. That
+    /// makes the listing only as reliable as event delivery, and events *are*
+    /// lost here — the worker side already carries a recovery path for exactly
+    /// that ("recovered autonomy child results after event receiver lag", see the
+    /// channel event loop). A branch whose terminal event is dropped, or which is
+    /// aborted by a path that never emits one, therefore renders as active
+    /// forever even though its task is long gone.
+    ///
+    /// Reconciling against the authoritative live set at render time — the
+    /// channel's own spawn-handle map, filtered to tasks that have not finished —
+    /// makes the listing self-healing. Workers already work this way
+    /// ([`Self::replace_workers_from_registry`]); this is the missing branch half.
+    ///
+    /// Only the *listing* is affected. Nothing is deleted from the registry or the
+    /// spawn map, so cancellation and completion stay auditable; a pruned branch
+    /// simply stops being advertised as running. Returns how many entries were
+    /// pruned.
+    pub fn retain_live_branches(
+        &mut self,
+        live: &std::collections::HashSet<BranchId>,
+    ) -> usize {
+        let before = self.active_branches.len();
+        self.active_branches
+            .retain(|branch| live.contains(&branch.id));
+        before.saturating_sub(self.active_branches.len())
+    }
+
     /// Add a new active branch.
     pub fn add_branch(&mut self, id: BranchId, description: impl Into<String>) {
         self.active_branches.push(BranchStatus {
@@ -908,5 +938,52 @@ mod tests {
 
         let rendered = status.render_with_context(None, Some(&info));
         assert!(!rendered.contains("Cron:"));
+    }
+
+    /// A branch whose terminal event never arrives must not advertise itself as
+    /// active forever. Reconciling against the live set at render time is what
+    /// makes the listing self-healing; this pins the pruning itself.
+    #[test]
+    fn retain_live_branches_drops_entries_whose_task_is_gone() {
+        let mut status = StatusBlock::new();
+        let live = Uuid::new_v4();
+        let finished = Uuid::new_v4();
+        status.add_branch(live, "still running");
+        status.add_branch(finished, "cancelled, terminal event lost");
+
+        let pruned = status.retain_live_branches(&std::collections::HashSet::from([live]));
+
+        assert_eq!(pruned, 1, "exactly the finished branch is pruned");
+        assert_eq!(status.active_branches.len(), 1);
+        assert_eq!(status.active_branches[0].id, live);
+        assert!(
+            !status.render().contains("cancelled, terminal event lost"),
+            "a pruned branch must not render in Active Branches"
+        );
+    }
+
+    /// Pruning is a listing concern only: nothing is added to the completed
+    /// items, and a second reconcile is a no-op, so the cancellation stays
+    /// auditable wherever it is recorded rather than being reported as a result.
+    #[test]
+    fn retain_live_branches_is_idempotent_and_records_no_completion() {
+        let mut status = StatusBlock::new();
+        let live = Uuid::new_v4();
+        let finished = Uuid::new_v4();
+        status.add_branch(live, "still running");
+        status.add_branch(finished, "finished");
+
+        let live_set = std::collections::HashSet::from([live]);
+        assert_eq!(status.retain_live_branches(&live_set), 1);
+        assert_eq!(
+            status.retain_live_branches(&live_set),
+            0,
+            "a second reconcile finds nothing left to prune"
+        );
+        assert!(
+            status.completed_items.is_empty(),
+            "pruning the listing must not fabricate a completion record"
+        );
+        assert_eq!(status.active_branches.len(), 1);
     }
 }

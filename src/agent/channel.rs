@@ -3541,8 +3541,29 @@ impl Channel {
             .filter(|worker| worker.provenance.origin_channel_id.as_ref() == Some(&self.id))
             .collect();
         let status_text = {
+            // Reconcile the branch listing against the spawn-handle map, keeping
+            // only branches whose task has not finished. A cancelled or completed
+            // branch whose terminal event was lost otherwise renders as active
+            // forever; the handle's own liveness cannot be lost. The map itself is
+            // left untouched, so the cancellation stays auditable.
+            let live_branches = {
+                let branches = self.state.active_branches.read().await;
+                branches
+                    .iter()
+                    .filter(|(_, handle)| !handle.is_finished())
+                    .map(|(branch_id, _)| *branch_id)
+                    .collect::<std::collections::HashSet<_>>()
+            };
             let mut status = self.state.status_block.write().await;
             status.replace_workers_from_registry(registry_workers);
+            let pruned_branches = status.retain_live_branches(&live_branches);
+            if pruned_branches > 0 {
+                tracing::debug!(
+                    pruned_branches,
+                    channel_id = %self.id,
+                    "pruned finished branches from the active listing"
+                );
+            }
             status.render_with_context(None, Some(&system_info))
         };
         (!status_text.is_empty()).then_some(status_text)
