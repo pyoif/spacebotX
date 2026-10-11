@@ -352,466 +352,432 @@ pub(super) async fn messaging_status(
 ) -> Result<Json<MessagingStatusResponse>, StatusCode> {
     let config_path = state.config_path.read().await.clone();
 
-    let (discord, slack, telegram, email, webhook, mattermost, signal, instances) =
-        if config_path.exists() {
-            let content = tokio::fs::read_to_string(&config_path)
-                .await
-                .map_err(|error| {
-                    tracing::warn!(%error, "failed to read config.toml for messaging status");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-            let doc: toml_edit::DocumentMut = content.parse().map_err(|error| {
-                tracing::warn!(%error, "failed to parse config.toml for messaging status");
+    let (discord, slack, telegram, email, webhook, mattermost, signal, instances) = if config_path
+        .exists()
+    {
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "failed to read config.toml for messaging status");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+        let doc: toml_edit::DocumentMut = content.parse().map_err(|error| {
+            tracing::warn!(%error, "failed to parse config.toml for messaging status");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-            let mut instances: Vec<AdapterInstanceStatus> = Vec::new();
-            let bindings = doc
-                .get("bindings")
-                .and_then(|value| value.as_array_of_tables());
+        let mut instances: Vec<AdapterInstanceStatus> = Vec::new();
+        let bindings = doc
+            .get("bindings")
+            .and_then(|value| value.as_array_of_tables());
 
-            let discord_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("discord"))
-                .map(|d| {
-                    let has_token = d
-                        .get("token")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let enabled = d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let discord_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("discord"))
+            .map(|d| {
+                let has_token = d
+                    .get("token")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let enabled = d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                    if has_token {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "discord",
-                            None,
-                            true,
-                            enabled,
+                if has_token {
+                    push_instance_status(&mut instances, bindings, "discord", None, true, enabled);
+                }
+
+                if let Some(named_instances) = d
+                    .get("instances")
+                    .and_then(|value| value.as_array_of_tables())
+                {
+                    for instance in named_instances {
+                        let instance_name = normalize_adapter_selector(
+                            instance.get("name").and_then(|value| value.as_str()),
                         );
-                    }
+                        let instance_enabled = instance
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true)
+                            && enabled;
+                        let instance_configured = instance
+                            .get("token")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|token| !token.is_empty());
 
-                    if let Some(named_instances) = d
-                        .get("instances")
-                        .and_then(|value| value.as_array_of_tables())
-                    {
-                        for instance in named_instances {
-                            let instance_name = normalize_adapter_selector(
-                                instance.get("name").and_then(|value| value.as_str()),
+                        if let Some(instance_name) = instance_name
+                            && instance_configured
+                        {
+                            push_instance_status(
+                                &mut instances,
+                                bindings,
+                                "discord",
+                                Some(instance_name),
+                                true,
+                                instance_enabled,
                             );
-                            let instance_enabled = instance
-                                .get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true)
-                                && enabled;
-                            let instance_configured = instance
-                                .get("token")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|token| !token.is_empty());
-
-                            if let Some(instance_name) = instance_name
-                                && instance_configured
-                            {
-                                push_instance_status(
-                                    &mut instances,
-                                    bindings,
-                                    "discord",
-                                    Some(instance_name),
-                                    true,
-                                    instance_enabled,
-                                );
-                            }
                         }
                     }
+                }
 
-                    PlatformStatus {
-                        configured: has_token,
-                        enabled: has_token && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            let slack_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("slack"))
-                .map(|s| {
-                    let has_bot_token = s
-                        .get("bot_token")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|t| !t.is_empty());
-                    let has_app_token = s
-                        .get("app_token")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|t| !t.is_empty());
-                    let enabled = s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                    if has_bot_token && has_app_token {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "slack",
-                            None,
-                            true,
-                            enabled,
-                        );
-                    }
-
-                    if let Some(named_instances) = s
-                        .get("instances")
-                        .and_then(|value| value.as_array_of_tables())
-                    {
-                        for instance in named_instances {
-                            let instance_name = normalize_adapter_selector(
-                                instance.get("name").and_then(|value| value.as_str()),
-                            );
-                            let has_instance_bot = instance
-                                .get("bot_token")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-                            let has_instance_app = instance
-                                .get("app_token")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-                            let instance_enabled = instance
-                                .get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true)
-                                && enabled;
-
-                            if let Some(instance_name) = instance_name
-                                && has_instance_bot
-                                && has_instance_app
-                            {
-                                push_instance_status(
-                                    &mut instances,
-                                    bindings,
-                                    "slack",
-                                    Some(instance_name),
-                                    true,
-                                    instance_enabled,
-                                );
-                            }
-                        }
-                    }
-
-                    PlatformStatus {
-                        configured: has_bot_token && has_app_token,
-                        enabled: has_bot_token && has_app_token && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            let webhook_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("webhook"))
-                .map(|w| {
-                    let enabled = w.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                    push_instance_status(&mut instances, bindings, "webhook", None, true, enabled);
-
-                    PlatformStatus {
-                        configured: true,
-                        enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            let email_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("email"))
-                .map(|email| {
-                    let has_imap_host = email
-                        .get("imap_host")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_imap_username = email
-                        .get("imap_username")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_imap_password = email
-                        .get("imap_password")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_smtp_host = email
-                        .get("smtp_host")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-
-                    let configured =
-                        has_imap_host && has_imap_username && has_imap_password && has_smtp_host;
-
-                    let enabled = email
-                        .get("enabled")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-
-                    if configured {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "email",
-                            None,
-                            true,
-                            enabled,
-                        );
-                    }
-
-                    PlatformStatus {
-                        configured,
-                        enabled: configured && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            let telegram_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("telegram"))
-                .map(|t| {
-                    let has_token = t
-                        .get("token")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let enabled = t.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                    if has_token {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "telegram",
-                            None,
-                            true,
-                            enabled,
-                        );
-                    }
-
-                    if let Some(named_instances) = t
-                        .get("instances")
-                        .and_then(|value| value.as_array_of_tables())
-                    {
-                        for instance in named_instances {
-                            let instance_name = normalize_adapter_selector(
-                                instance.get("name").and_then(|value| value.as_str()),
-                            );
-                            let instance_enabled = instance
-                                .get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true)
-                                && enabled;
-                            let instance_configured = instance
-                                .get("token")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-
-                            if let Some(instance_name) = instance_name
-                                && instance_configured
-                            {
-                                push_instance_status(
-                                    &mut instances,
-                                    bindings,
-                                    "telegram",
-                                    Some(instance_name),
-                                    true,
-                                    instance_enabled,
-                                );
-                            }
-                        }
-                    }
-
-                    PlatformStatus {
-                        configured: has_token,
-                        enabled: has_token && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            // Populate instances for Mattermost (not in the legacy per-platform status fields)
-            let mattermost_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("mattermost"))
-                .map(|mm| {
-                    let has_url = mm
-                        .get("base_url")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_token = mm
-                        .get("token")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let enabled = mm.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                    if has_url && has_token {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "mattermost",
-                            None,
-                            true,
-                            enabled,
-                        );
-                    }
-
-                    if let Some(named_instances) = mm
-                        .get("instances")
-                        .and_then(|value| value.as_array_of_tables())
-                    {
-                        for instance in named_instances {
-                            let instance_name = normalize_adapter_selector(
-                                instance.get("name").and_then(|value| value.as_str()),
-                            );
-                            let instance_enabled = instance
-                                .get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true)
-                                && enabled;
-                            let instance_configured = instance
-                                .get("base_url")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty())
-                                && instance
-                                    .get("token")
-                                    .and_then(|value| value.as_str())
-                                    .is_some_and(|value| !value.is_empty());
-
-                            if let Some(instance_name) = instance_name
-                                && instance_configured
-                            {
-                                push_instance_status(
-                                    &mut instances,
-                                    bindings,
-                                    "mattermost",
-                                    Some(instance_name),
-                                    true,
-                                    instance_enabled,
-                                );
-                            }
-                        }
-                    }
-
-                    PlatformStatus {
-                        configured: has_url && has_token,
-                        enabled: has_url && has_token && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            // Signal status and instances
-            let signal_status = doc
-                .get("messaging")
-                .and_then(|m| m.get("signal"))
-                .map(|s| {
-                    let has_http_url = s
-                        .get("http_url")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_account = s
-                        .get("account")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let enabled = s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                    if has_http_url && has_account {
-                        push_instance_status(
-                            &mut instances,
-                            bindings,
-                            "signal",
-                            None,
-                            true,
-                            enabled,
-                        );
-                    }
-
-                    if let Some(named_instances) = s
-                        .get("instances")
-                        .and_then(|value| value.as_array_of_tables())
-                    {
-                        for instance in named_instances {
-                            let instance_name = normalize_adapter_selector(
-                                instance.get("name").and_then(|value| value.as_str()),
-                            );
-                            // Named instances are enabled based only on their own flag (independent of root enabled)
-                            let instance_enabled = instance
-                                .get("enabled")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(true);
-                            let instance_has_http_url = instance
-                                .get("http_url")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-                            let instance_has_account = instance
-                                .get("account")
-                                .and_then(|value| value.as_str())
-                                .is_some_and(|value| !value.is_empty());
-
-                            if let Some(instance_name) = instance_name
-                                && instance_has_http_url
-                                && instance_has_account
-                            {
-                                push_instance_status(
-                                    &mut instances,
-                                    bindings,
-                                    "signal",
-                                    Some(instance_name),
-                                    true,
-                                    instance_enabled,
-                                );
-                            }
-                        }
-                    }
-
-                    PlatformStatus {
-                        configured: has_http_url && has_account,
-                        enabled: has_http_url && has_account && enabled,
-                    }
-                })
-                .unwrap_or(PlatformStatus {
-                    configured: false,
-                    enabled: false,
-                });
-
-            (
-                discord_status,
-                slack_status,
-                telegram_status,
-                email_status,
-                webhook_status,
-                mattermost_status,
-                signal_status,
-                instances,
-            )
-        } else {
-            let default = PlatformStatus {
+                PlatformStatus {
+                    configured: has_token,
+                    enabled: has_token && enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
                 configured: false,
                 enabled: false,
-            };
-            (
-                default.clone(),
-                default.clone(),
-                default.clone(),
-                default.clone(),
-                default.clone(),
-                default.clone(),
-                default.clone(),
-                Vec::new(),
-            )
+            });
+
+        let slack_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("slack"))
+            .map(|s| {
+                let has_bot_token = s
+                    .get("bot_token")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|t| !t.is_empty());
+                let has_app_token = s
+                    .get("app_token")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|t| !t.is_empty());
+                let enabled = s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if has_bot_token && has_app_token {
+                    push_instance_status(&mut instances, bindings, "slack", None, true, enabled);
+                }
+
+                if let Some(named_instances) = s
+                    .get("instances")
+                    .and_then(|value| value.as_array_of_tables())
+                {
+                    for instance in named_instances {
+                        let instance_name = normalize_adapter_selector(
+                            instance.get("name").and_then(|value| value.as_str()),
+                        );
+                        let has_instance_bot = instance
+                            .get("bot_token")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| !value.is_empty());
+                        let has_instance_app = instance
+                            .get("app_token")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| !value.is_empty());
+                        let instance_enabled = instance
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true)
+                            && enabled;
+
+                        if let Some(instance_name) = instance_name
+                            && has_instance_bot
+                            && has_instance_app
+                        {
+                            push_instance_status(
+                                &mut instances,
+                                bindings,
+                                "slack",
+                                Some(instance_name),
+                                true,
+                                instance_enabled,
+                            );
+                        }
+                    }
+                }
+
+                PlatformStatus {
+                    configured: has_bot_token && has_app_token,
+                    enabled: has_bot_token && has_app_token && enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
+                configured: false,
+                enabled: false,
+            });
+
+        let webhook_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("webhook"))
+            .map(|w| {
+                let enabled = w.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                push_instance_status(&mut instances, bindings, "webhook", None, true, enabled);
+
+                PlatformStatus {
+                    configured: true,
+                    enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
+                configured: false,
+                enabled: false,
+            });
+
+        let email_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("email"))
+            .map(|email| {
+                let has_imap_host = email
+                    .get("imap_host")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let has_imap_username = email
+                    .get("imap_username")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let has_imap_password = email
+                    .get("imap_password")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let has_smtp_host = email
+                    .get("smtp_host")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+
+                let configured =
+                    has_imap_host && has_imap_username && has_imap_password && has_smtp_host;
+
+                let enabled = email
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if configured {
+                    push_instance_status(&mut instances, bindings, "email", None, true, enabled);
+                }
+
+                PlatformStatus {
+                    configured,
+                    enabled: configured && enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
+                configured: false,
+                enabled: false,
+            });
+
+        let telegram_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("telegram"))
+            .map(|t| {
+                let has_token = t
+                    .get("token")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let enabled = t.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if has_token {
+                    push_instance_status(&mut instances, bindings, "telegram", None, true, enabled);
+                }
+
+                if let Some(named_instances) = t
+                    .get("instances")
+                    .and_then(|value| value.as_array_of_tables())
+                {
+                    for instance in named_instances {
+                        let instance_name = normalize_adapter_selector(
+                            instance.get("name").and_then(|value| value.as_str()),
+                        );
+                        let instance_enabled = instance
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true)
+                            && enabled;
+                        let instance_configured = instance
+                            .get("token")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| !value.is_empty());
+
+                        if let Some(instance_name) = instance_name
+                            && instance_configured
+                        {
+                            push_instance_status(
+                                &mut instances,
+                                bindings,
+                                "telegram",
+                                Some(instance_name),
+                                true,
+                                instance_enabled,
+                            );
+                        }
+                    }
+                }
+
+                PlatformStatus {
+                    configured: has_token,
+                    enabled: has_token && enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
+                configured: false,
+                enabled: false,
+            });
+
+        // Populate instances for Mattermost (not in the legacy per-platform status fields)
+        let mattermost_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("mattermost"))
+            .map(|mm| {
+                let has_url = mm
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let has_token = mm
+                    .get("token")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let enabled = mm.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if has_url && has_token {
+                    push_instance_status(
+                        &mut instances,
+                        bindings,
+                        "mattermost",
+                        None,
+                        true,
+                        enabled,
+                    );
+                }
+
+                if let Some(named_instances) = mm
+                    .get("instances")
+                    .and_then(|value| value.as_array_of_tables())
+                {
+                    for instance in named_instances {
+                        let instance_name = normalize_adapter_selector(
+                            instance.get("name").and_then(|value| value.as_str()),
+                        );
+                        let instance_enabled = instance
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true)
+                            && enabled;
+                        let instance_configured = instance
+                            .get("base_url")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| !value.is_empty())
+                            && instance
+                                .get("token")
+                                .and_then(|value| value.as_str())
+                                .is_some_and(|value| !value.is_empty());
+
+                        if let Some(instance_name) = instance_name
+                            && instance_configured
+                        {
+                            push_instance_status(
+                                &mut instances,
+                                bindings,
+                                "mattermost",
+                                Some(instance_name),
+                                true,
+                                instance_enabled,
+                            );
+                        }
+                    }
+                }
+
+                PlatformStatus {
+                    configured: has_url && has_token,
+                    enabled: has_url && has_token && enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
+                configured: false,
+                enabled: false,
+            });
+
+        // Signal status and instances
+        let signal_status = doc
+            .get("messaging")
+            .and_then(|m| m.get("signal"))
+            .map(|s| {
+                let has_http_url = s
+                    .get("http_url")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let has_account = s
+                    .get("account")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let enabled = s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if has_http_url && has_account {
+                    push_instance_status(&mut instances, bindings, "signal", None, true, enabled);
+                }
+
+                if let Some(named_instances) = s
+                    .get("instances")
+                    .and_then(|value| value.as_array_of_tables())
+                {
+                    for instance in named_instances {
+                        let instance_name = normalize_adapter_selector(
+                            instance.get("name").and_then(|value| value.as_str()),
+                        );
+                        // Named instances are enabled based only on their own flag (independent of root enabled)
+                        let instance_enabled = instance
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true);
+                        let instance_has_http_url = instance
+                            .get("http_url")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| !value.is_empty());
+                        let instance_has_account = instance
+                            .get("account")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|value| !value.is_empty());
+
+                        if let Some(instance_name) = instance_name
+                            && instance_has_http_url
+                            && instance_has_account
+                        {
+                            push_instance_status(
+                                &mut instances,
+                                bindings,
+                                "signal",
+                                Some(instance_name),
+                                true,
+                                instance_enabled,
+                            );
+                        }
+                    }
+                }
+
+                PlatformStatus {
+                    configured: has_http_url && has_account,
+                    enabled: has_http_url && has_account && enabled,
+                }
+            })
+            .unwrap_or(PlatformStatus {
+                configured: false,
+                enabled: false,
+            });
+
+        (
+            discord_status,
+            slack_status,
+            telegram_status,
+            email_status,
+            webhook_status,
+            mattermost_status,
+            signal_status,
+            instances,
+        )
+    } else {
+        let default = PlatformStatus {
+            configured: false,
+            enabled: false,
         };
+        (
+            default.clone(),
+            default.clone(),
+            default.clone(),
+            default.clone(),
+            default.clone(),
+            default.clone(),
+            default.clone(),
+            Vec::new(),
+        )
+    };
 
     Ok(Json(MessagingStatusResponse {
         discord,
@@ -2022,7 +1988,6 @@ pub(super) async fn delete_messaging_instance(
                 .await;
         }
     }
-
 
     tracing::info!(platform = %platform, adapter = %runtime_key, "messaging instance deleted via API");
 

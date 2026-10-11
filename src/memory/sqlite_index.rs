@@ -151,13 +151,12 @@ impl MemoryVectorTable {
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<(String, f32)>> {
-        let rows = sqlx::query(
-            "SELECT memory_id, dim, embedding FROM memory_vectors WHERE model = ?",
-        )
-        .bind(EMBEDDING_MODEL_ID)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to scan memory vectors")?;
+        let rows =
+            sqlx::query("SELECT memory_id, dim, embedding FROM memory_vectors WHERE model = ?")
+                .bind(EMBEDDING_MODEL_ID)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to scan memory vectors")?;
 
         let mut scored: Vec<(String, f32)> = Vec::with_capacity(rows.len());
         for row in rows {
@@ -322,7 +321,9 @@ impl ChronicleVectorTable {
 
         let mut hits: Vec<ChronicleHit> = Vec::with_capacity(rows.len());
         for row in rows {
-            let dim: i64 = row.try_get("dim").context("chronicle vector row has no dim")?;
+            let dim: i64 = row
+                .try_get("dim")
+                .context("chronicle vector row has no dim")?;
             let blob: Vec<u8> = row
                 .try_get("embedding")
                 .context("chronicle vector row has no blob")?;
@@ -337,7 +338,9 @@ impl ChronicleVectorTable {
                 checkpoint_id: row
                     .try_get("checkpoint_id")
                     .context("chronicle vector row has no id")?,
-                title: row.try_get("title").context("checkpoint row has no title")?,
+                title: row
+                    .try_get("title")
+                    .context("checkpoint row has no title")?,
                 channel_id: row
                     .try_get("channel_id")
                     .context("checkpoint row has no channel_id")?,
@@ -496,7 +499,9 @@ pub async fn backfill_memory_search_text(pool: &SqlitePool) -> Result<usize> {
         let batch_len = rows.len();
         for row in rows {
             let id: String = row.try_get("id").context("memory row has no id")?;
-            let content: String = row.try_get("content").context("memory row has no content")?;
+            let content: String = row
+                .try_get("content")
+                .context("memory row has no content")?;
             let stored: String = row
                 .try_get("search_text")
                 .context("memory row has no search_text")?;
@@ -599,7 +604,9 @@ pub async fn backfill_chronicle_search_text(pool: &SqlitePool) -> Result<usize> 
         let batch_len = rows.len();
         for row in rows {
             let id: String = row.try_get("id").context("checkpoint row has no id")?;
-            let title: String = row.try_get("title").context("checkpoint row has no title")?;
+            let title: String = row
+                .try_get("title")
+                .context("checkpoint row has no title")?;
             let summary: String = row
                 .try_get("summary")
                 .context("checkpoint row has no summary")?;
@@ -733,7 +740,10 @@ mod tests {
         let pool = store.pool().clone();
 
         let memory = save_legacy_memory(&store, &pool, "the memories are cached").await;
-        assert_eq!(search_text_of(&pool, &memory.id).await, "the memories are cached");
+        assert_eq!(
+            search_text_of(&pool, &memory.id).await,
+            "the memories are cached"
+        );
 
         let updated = backfill_memory_search_text(&pool).await.expect("backfill");
         assert_eq!(updated, 1, "the legacy row should be rewritten once");
@@ -926,7 +936,9 @@ mod tests {
         .await
         .expect("insert checkpoint");
 
-        let updated = backfill_chronicle_search_text(&pool).await.expect("backfill");
+        let updated = backfill_chronicle_search_text(&pool)
+            .await
+            .expect("backfill");
         assert_eq!(updated, 1);
 
         let written = sqlx::query_scalar::<_, String>(
@@ -939,7 +951,9 @@ mod tests {
         assert!(written.contains("Caching layers"), "missing raw: {written}");
 
         assert_eq!(
-            backfill_chronicle_search_text(&pool).await.expect("backfill"),
+            backfill_chronicle_search_text(&pool)
+                .await
+                .expect("backfill"),
             0,
             "chronicle backfill is not idempotent"
         );
@@ -970,7 +984,11 @@ mod tests {
         let blob = encode_vector(&embedding);
         assert_eq!(blob.len(), embedding.len() * 4);
         assert_eq!(decode_vector(&blob, 3), Some(embedding));
-        assert_eq!(decode_vector(&blob, 4), None, "dim mismatch must not decode");
+        assert_eq!(
+            decode_vector(&blob, 4),
+            None,
+            "dim mismatch must not decode"
+        );
         assert_eq!(decode_vector(&blob[..blob.len() - 1], 3), None);
     }
 
@@ -1013,7 +1031,10 @@ mod tests {
             v
         };
 
-        let hits = table.vector_search(&query, 10).await.expect("vector search");
+        let hits = table
+            .vector_search(&query, 10)
+            .await
+            .expect("vector search");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, near.id, "the closer vector must rank first");
         assert!(hits[0].1 > hits[1].1);
@@ -1042,14 +1063,28 @@ mod tests {
         let by_stem = memory_text_search(&pool, "memories", 10)
             .await
             .expect("text search");
-        assert_eq!(by_stem.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), vec![memory.id.clone()]);
+        assert_eq!(
+            by_stem.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            vec![memory.id.clone()]
+        );
 
         let by_identifier = memory_text_search(&pool, "context_window", 10)
             .await
             .expect("text search");
-        assert_eq!(by_identifier.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), vec![memory.id.clone()]);
+        assert_eq!(
+            by_identifier
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+            vec![memory.id.clone()]
+        );
 
         // No usable terms is "no results", not an error.
-        assert!(memory_text_search(&pool, "the of", 10).await.expect("text search").is_empty());
+        assert!(
+            memory_text_search(&pool, "the of", 10)
+                .await
+                .expect("text search")
+                .is_empty()
+        );
     }
 }

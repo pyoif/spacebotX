@@ -195,7 +195,12 @@ impl MemorySearch {
             }
             tracing::info!(embedded, total, "chronicle embedding backfill progress");
         }
-        tracing::info!(embedded, skipped, total, "chronicle embedding backfill complete");
+        tracing::info!(
+            embedded,
+            skipped,
+            total,
+            "chronicle embedding backfill complete"
+        );
         Ok(embedded)
     }
 
@@ -227,9 +232,11 @@ impl MemorySearch {
     pub async fn backfill_memory_embeddings(&self, pool: &sqlx::SqlitePool) -> Result<usize> {
         const BATCH: usize = 64;
 
-        let pending =
-            crate::memory::sqlite_index::pending_memory_embeddings(pool, crate::memory::sqlite_index::EMBEDDING_MODEL_ID)
-                .await?;
+        let pending = crate::memory::sqlite_index::pending_memory_embeddings(
+            pool,
+            crate::memory::sqlite_index::EMBEDDING_MODEL_ID,
+        )
+        .await?;
         if pending.is_empty() {
             return Ok(0);
         }
@@ -257,7 +264,8 @@ impl MemorySearch {
             match self.embedding_model.embed_many(texts).await {
                 Ok(embeddings) => {
                     for ((memory_id, _), embedding) in batch.into_iter().zip(embeddings) {
-                        if let Err(error) = self.embedding_table.store(&memory_id, &embedding).await {
+                        if let Err(error) = self.embedding_table.store(&memory_id, &embedding).await
+                        {
                             tracing::warn!(
                                 %memory_id,
                                 %error,
@@ -299,11 +307,7 @@ impl MemorySearch {
                     }
                 }
             }
-            tracing::info!(
-                embedded,
-                total,
-                "memory embedding backfill progress"
-            );
+            tracing::info!(embedded, total, "memory embedding backfill progress");
         }
 
         tracing::info!(embedded, total, "memory embedding backfill complete");

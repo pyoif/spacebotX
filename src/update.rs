@@ -103,8 +103,7 @@ pub fn new_shared_status() -> SharedUpdateStatus {
     match status.deployment {
         Deployment::Docker => {
             status.can_apply = false;
-            status.cannot_apply_reason =
-                Some(SELF_UPDATE_DISABLED_REASON.to_string());
+            status.cannot_apply_reason = Some(SELF_UPDATE_DISABLED_REASON.to_string());
         }
         Deployment::Native => {
             status.cannot_apply_reason =
@@ -243,9 +242,7 @@ struct ApplyCapability {
 fn detect_apply_capability(deployment: Deployment) -> ApplyCapability {
     let reason = match deployment {
         Deployment::Docker => SELF_UPDATE_DISABLED_REASON,
-        Deployment::Hosted => {
-            "Hosted instances are updated by platform rollout, not self-service."
-        }
+        Deployment::Hosted => "Hosted instances are updated by platform rollout, not self-service.",
         Deployment::Native => "Native/source installs update manually (rebuild + restart).",
     };
     ApplyCapability {
@@ -276,4 +273,3 @@ mod tests {
         }
     }
 }
-

@@ -608,5 +608,4 @@ mod dm_wildcard_tests {
         assert!(p.dm_user_allowed("user-id-abc"));
         assert!(!p.dm_user_allowed("other-user"));
     }
-
 }

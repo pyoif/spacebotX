@@ -4876,12 +4876,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
         };
 
-        let assembled = vec![
-            make("zebra"),
-            make("alpha"),
-            make("middle"),
-            make("beta"),
-        ];
+        let assembled = vec![make("zebra"), make("alpha"), make("middle"), make("beta")];
 
         let ordered: Vec<String> = stable_tool_definitions(&assembled)
             .into_iter()
@@ -4892,12 +4887,7 @@ mod tests {
 
         // A different input order must yield the same output order — this is
         // the property the cache depends on.
-        let shuffled = vec![
-            make("middle"),
-            make("zebra"),
-            make("beta"),
-            make("alpha"),
-        ];
+        let shuffled = vec![make("middle"), make("zebra"), make("beta"), make("alpha")];
         let ordered_again: Vec<String> = stable_tool_definitions(&shuffled)
             .into_iter()
             .map(|tool| tool.name.clone())

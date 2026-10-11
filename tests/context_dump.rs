@@ -66,8 +66,9 @@ async fn bootstrap_deps() -> anyhow::Result<(spacebot::AgentDeps, spacebot::conf
     // Vectors live in the same SQLite database as the memories; the chronicle
     // table mirrors the production wiring in `main.rs`.
     let memory_search = Arc::new(
-        spacebot::memory::MemorySearch::new(memory_store, embedding_model)
-            .with_chronicle_table(spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone())),
+        spacebot::memory::MemorySearch::new(memory_store, embedding_model).with_chronicle_table(
+            spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone()),
+        ),
     );
     let task_store = Arc::new(spacebot::tasks::TaskStore::new(instance_pool.clone()));
 

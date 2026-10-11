@@ -1476,10 +1476,7 @@ mod tests {
             .expect("segmented render");
 
         let position = |needle: &str| -> Option<usize> {
-            segmented
-                .blocks
-                .iter()
-                .position(|block| block.id == needle)
+            segmented.blocks.iter().position(|block| block.id == needle)
         };
 
         let identity = position("identity_context").expect("identity block present");
@@ -1489,10 +1486,8 @@ mod tests {
         let chronicle = position("session_chronicle").expect("chronicle block present");
         let backfill = position("backfill_transcript").expect("backfill block present");
         let working_memory = position("working_memory").expect("working memory block present");
-        let activity_map =
-            position("channel_activity_map").expect("activity map block present");
-        let participants =
-            position("participant_context").expect("participant block present");
+        let activity_map = position("channel_activity_map").expect("activity map block present");
+        let participants = position("participant_context").expect("participant block present");
         let goals = position("active_goals").expect("goals block present");
         let tasks = position("active_tasks").expect("active tasks block present");
         let conversation =

@@ -103,9 +103,8 @@ impl AccessContext<'_> {
             },
         };
 
-        list.iter().any(|entry| {
-            entry == "*" || entry == self.sender_id
-        })
+        list.iter()
+            .any(|entry| entry == "*" || entry == self.sender_id)
     }
 
     pub fn allows(&self, def: &CommandDef) -> bool {

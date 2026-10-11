@@ -261,8 +261,7 @@ pub fn map_model_id(candidate: &str, known: &[String]) -> Option<(String, IdMatc
     // against the model segment of a namespaced catalogue key.
     let bare = separator_variants(strip_vendor_prefix(descoped));
     if let Some(found) = known.iter().find(|id| {
-        let known_bare =
-            separator_variants(strip_vendor_prefix(strip_colon_suffix(id)));
+        let known_bare = separator_variants(strip_vendor_prefix(strip_colon_suffix(id)));
         bare.iter().any(|variant| known_bare.contains(variant))
     }) {
         return Some((found.clone(), IdMatch::VendorPrefix));
@@ -572,7 +571,11 @@ mod tests {
         let mut unique = variants.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!(unique.len(), variants.len(), "variants must be deduplicated");
+        assert_eq!(
+            unique.len(),
+            variants.len(),
+            "variants must be deduplicated"
+        );
     }
 
     #[test]
@@ -769,7 +772,11 @@ mod tests {
         // Dot in the provider id, dash in the catalogue key, namespaced.
         assert_eq!(
             resolve_from_models_dev("glm-5.3", &data),
-            Some(("zhipuai/glm-5.3".to_string(), IdMatch::VendorPrefix, 1_000_000))
+            Some((
+                "zhipuai/glm-5.3".to_string(),
+                IdMatch::VendorPrefix,
+                1_000_000
+            ))
         );
         assert_eq!(
             resolve_from_models_dev("deepseek-v4.1-flash", &data),

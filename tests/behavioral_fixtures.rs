@@ -109,7 +109,9 @@ async fn bootstrap(instance_dir: &Path) -> anyhow::Result<AgentDeps> {
             spacebot::memory::MemoryStore::new(db.sqlite.clone()),
             embedding_model,
         )
-        .with_chronicle_table(spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone())),
+        .with_chronicle_table(spacebot::memory::ChronicleVectorTable::new(
+            db.sqlite.clone(),
+        )),
     );
 
     let identity = spacebot::identity::Identity::load(&agent_config.workspace).await;

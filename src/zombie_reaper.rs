@@ -52,7 +52,7 @@
 
 use std::time::Duration;
 
-use crate::process_registry::{spawning_in_progress, WAITED};
+use crate::process_registry::{WAITED, spawning_in_progress};
 
 /// How often the periodic sweep runs.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
@@ -81,9 +81,8 @@ pub fn spawn() {
     tokio::spawn(async {
         // Signal wake. If registration fails (e.g. unusual platform), fall back
         // to the periodic tick alone rather than losing the reaper entirely.
-        let mut sigchld = match tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::child(),
-        ) {
+        let mut sigchld = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())
+        {
             Ok(s) => Some(s),
             Err(e) => {
                 tracing::warn!(
@@ -370,7 +369,10 @@ mod tests {
             let set = crate::process_registry::WAITED.lock().unwrap();
             !spawning_in_progress() && !set.contains(&pid)
         };
-        assert!(!should_reap, "registered pid must never be selected for reaping");
+        assert!(
+            !should_reap,
+            "registered pid must never be selected for reaping"
+        );
 
         crate::process_registry::WAITED.lock().unwrap().remove(&pid);
         assert!(!crate::process_registry::is_waited(pid));

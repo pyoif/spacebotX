@@ -770,7 +770,6 @@ pub async fn add_direct_mode_tools(
         .add_tool(FileListTool::new(workspace, sandbox))
         .await?;
 
-
     // Web search
     if let Some(key) = rc.brave_search_key.load().as_ref().clone() {
         handle.add_tool(WebSearchTool::new(key)).await?;
@@ -1341,7 +1340,6 @@ pub fn create_worker_tool_server(
         server = server.tool(SecretSetTool::new(store.clone(), agent_id.clone()));
     }
 
-
     if let Some(key) = brave_search_key {
         server = server.tool(WebSearchTool::new(key));
     }
@@ -1486,7 +1484,6 @@ pub fn create_cortex_chat_tool_server(
         .tool(ShellTool::new(workspace.clone(), sandbox.clone()));
 
     server = register_file_tools(server, workspace, sandbox);
-
 
     if let Some(key) = brave_search_key {
         server = server.tool(WebSearchTool::new(key));

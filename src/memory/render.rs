@@ -77,9 +77,7 @@ pub async fn render_memory_store(store: &MemoryStore, max_words: usize) -> Resul
         // See `crate::memory::store::watermark_eviction_window`.
         let window = crate::memory::store::watermark_eviction_window(total, entry_cap as i64);
 
-        let entries = store
-            .get_by_type_append_only(*memory_type, window)
-            .await?;
+        let entries = store.get_by_type_append_only(*memory_type, window).await?;
         // Strict append-only ordering (R3): entries render oldest-first in
         // insertion order, so a new memory adds bytes at the END of the block
         // and every earlier byte stays identical — the block keeps a stable,
@@ -260,9 +258,7 @@ mod tests {
         // A 150-word budget keeps the Facts entry cap at 3 but only fits two
         // 60-word bullets; the third fact and the whole Decisions section do
         // not render.
-        let rendered = render_memory_store(&store, 150)
-            .await
-            .unwrap();
+        let rendered = render_memory_store(&store, 150).await.unwrap();
 
         assert!(rendered.contains("### Facts — 2 of 3"));
         assert!(rendered.contains("alpha fact"));
@@ -310,7 +306,9 @@ mod tests {
         assert!(tasks.contains("Ship the cache fix"));
 
         // A different agent's board is empty for this render.
-        let other = render_active_tasks(&task_store, "someone-else").await.unwrap();
+        let other = render_active_tasks(&task_store, "someone-else")
+            .await
+            .unwrap();
         assert!(other.contains("No active tasks."));
     }
 
@@ -320,9 +318,7 @@ mod tests {
         save_three_word_memory(&store, MemoryType::Fact, "alpha fact one", 0.9).await;
         save_three_word_memory(&store, MemoryType::Fact, "bravo fact two", 0.8).await;
 
-        let rendered = render_memory_store(&store, 500)
-            .await
-            .unwrap();
+        let rendered = render_memory_store(&store, 500).await.unwrap();
 
         assert!(rendered.contains("### Facts\n"));
         assert!(!rendered.contains("### Facts —"));
@@ -344,15 +340,11 @@ mod tests {
         // At the baseline budget the Facts cap is 10; with 12 stored, batched
         // watermark eviction has already trimmed the front, so 9 of the 12
         // render (the window band is [8, 10]).
-        let baseline = render_memory_store(&store, 500)
-            .await
-            .unwrap();
+        let baseline = render_memory_store(&store, 500).await.unwrap();
         assert!(baseline.contains("### Facts — 9 of 12"));
 
         // Doubling the budget doubles the cap, so every entry renders.
-        let doubled = render_memory_store(&store, 1000)
-            .await
-            .unwrap();
+        let doubled = render_memory_store(&store, 1000).await.unwrap();
         assert!(doubled.contains("### Facts\n"));
         assert!(!doubled.contains("### Facts —"));
     }
@@ -364,9 +356,7 @@ mod tests {
             Memory::new("Victor prefers direct answers", MemoryType::Human).with_importance(1.0);
         store.save(&anchor).await.unwrap();
 
-        let rendered = render_memory_store(&store, 500)
-            .await
-            .unwrap();
+        let rendered = render_memory_store(&store, 500).await.unwrap();
 
         assert!(!rendered.contains("People"));
         assert!(!rendered.contains("Victor prefers direct answers"));
@@ -413,7 +403,10 @@ mod tests {
         // The insertion order is preserved regardless of importance.
         let alpha = after.find("alpha fact one").expect("alpha present");
         let charlie = after.find("charlie fact three").expect("charlie present");
-        assert!(alpha < charlie, "entries render oldest-first, not by importance");
+        assert!(
+            alpha < charlie,
+            "entries render oldest-first, not by importance"
+        );
     }
 
     /// Eviction drops the OLDEST entries off the front of the block, so the

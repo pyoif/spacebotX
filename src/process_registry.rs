@@ -436,9 +436,7 @@ mod tests {
             };
 
             // A file is "interesting" if any line constructs a process command.
-            let creates_process = contents
-                .lines()
-                .any(|line| has_process_command_new(line));
+            let creates_process = contents.lines().any(|line| has_process_command_new(line));
             if !creates_process {
                 continue;
             }

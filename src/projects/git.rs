@@ -121,7 +121,8 @@ pub async fn discover_repos(project_root: &Path) -> anyhow::Result<Vec<Discovere
 /// the main working tree.
 pub async fn list_worktrees(repo_path: &Path) -> anyhow::Result<Vec<DiscoveredWorktree>> {
     let mut cmd = Command::new("git");
-    cmd.args(["worktree", "list", "--porcelain"]).current_dir(repo_path);
+    cmd.args(["worktree", "list", "--porcelain"])
+        .current_dir(repo_path);
     let output = output_managed(&mut cmd).await.with_context(|| {
         format!(
             "failed to run `git worktree list` in {}",
@@ -303,7 +304,8 @@ fn scrub_remote_url(url: &str) -> String {
 /// Get the origin remote URL for a repo. Credentials are scrubbed from HTTPS URLs.
 async fn get_remote_url(repo_path: &Path) -> Option<String> {
     let mut cmd = Command::new("git");
-    cmd.args(["remote", "get-url", "origin"]).current_dir(repo_path);
+    cmd.args(["remote", "get-url", "origin"])
+        .current_dir(repo_path);
     let output = output_managed(&mut cmd).await.ok()?;
 
     if !output.status.success() {

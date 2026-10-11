@@ -850,9 +850,8 @@ pub async fn create_agent_internal(
 
     let memory_store = crate::memory::MemoryStore::new(db.sqlite.clone());
     let memory_search = std::sync::Arc::new(
-        crate::memory::MemorySearch::new(memory_store, embedding_model).with_chronicle_table(
-            crate::memory::ChronicleVectorTable::new(db.sqlite.clone()),
-        ),
+        crate::memory::MemorySearch::new(memory_store, embedding_model)
+            .with_chronicle_table(crate::memory::ChronicleVectorTable::new(db.sqlite.clone())),
     );
     if let Err(error) = memory_search
         .backfill_chronicle_embeddings(&db.sqlite)

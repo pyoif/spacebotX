@@ -519,7 +519,10 @@ impl MemoryStore {
         .fetch_all(&self.pool)
         .await
         .with_context(|| {
-            format!("failed to get memories by type {:?} in insertion order", memory_type)
+            format!(
+                "failed to get memories by type {:?} in insertion order",
+                memory_type
+            )
         })?;
 
         Ok(rows.into_iter().map(|row| row_to_memory(&row)).collect())
@@ -778,7 +781,9 @@ pub(crate) async fn merge_memories_in_tx(
         "#,
     )
     .bind(&updated_survivor.content)
-    .bind(crate::memory::analyzer::search_text(&updated_survivor.content))
+    .bind(crate::memory::analyzer::search_text(
+        &updated_survivor.content,
+    ))
     .bind(updated_survivor.memory_type.to_string())
     .bind(updated_survivor.importance)
     .bind(updated_survivor.updated_at)

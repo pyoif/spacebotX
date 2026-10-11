@@ -529,12 +529,15 @@ mod tests {
     #[test]
     fn extract_platform_meta_persists_telegram_thread_id() {
         let mut metadata = HashMap::new();
-        metadata.insert("telegram_chat_id".into(), serde_json::json!("-1004314760743"));
+        metadata.insert(
+            "telegram_chat_id".into(),
+            serde_json::json!("-1004314760743"),
+        );
         metadata.insert("telegram_chat_type".into(), serde_json::json!("supergroup"));
         metadata.insert("telegram_thread_id".into(), serde_json::json!("29"));
 
-        let blob = extract_platform_meta("telegram", &metadata)
-            .expect("telegram meta should extract");
+        let blob =
+            extract_platform_meta("telegram", &metadata).expect("telegram meta should extract");
         let parsed: serde_json::Value =
             serde_json::from_str(&blob).expect("blob should be valid JSON");
 
@@ -546,10 +549,13 @@ mod tests {
     #[test]
     fn extract_platform_meta_omits_thread_id_when_absent() {
         let mut metadata = HashMap::new();
-        metadata.insert("telegram_chat_id".into(), serde_json::json!("-1004314760743"));
+        metadata.insert(
+            "telegram_chat_id".into(),
+            serde_json::json!("-1004314760743"),
+        );
 
-        let blob = extract_platform_meta("telegram", &metadata)
-            .expect("telegram meta should extract");
+        let blob =
+            extract_platform_meta("telegram", &metadata).expect("telegram meta should extract");
         let parsed: serde_json::Value =
             serde_json::from_str(&blob).expect("blob should be valid JSON");
 

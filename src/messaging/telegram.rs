@@ -58,10 +58,7 @@ const GENERAL_TOPIC_ID: i32 = 1;
 ///
 /// This is intentionally **chat-action only**: the equivalent ids must never be
 /// forwarded to `sendMessage`/media sends, which reject `message_thread_id: 1`.
-fn general_chat_action_thread_id(
-    thread_id: Option<ThreadId>,
-    is_forum: bool,
-) -> Option<ThreadId> {
+fn general_chat_action_thread_id(thread_id: Option<ThreadId>, is_forum: bool) -> Option<ThreadId> {
     match thread_id {
         Some(topic_id) => Some(topic_id),
         None if is_forum => Some(ThreadId(MessageId(GENERAL_TOPIC_ID))),
@@ -1125,7 +1122,9 @@ fn parse_broadcast_target(target: &str) -> anyhow::Result<(ChatId, Option<Thread
     match target.rsplit_once(':') {
         Some((chat, thread)) if thread.parse::<i64>().is_ok() => {
             let chat_id = ChatId(chat.parse::<i64>().context("invalid chat id")?);
-            let thread_id = ThreadId(MessageId(thread.parse::<i64>().context("invalid thread id")? as i32));
+            let thread_id = ThreadId(MessageId(
+                thread.parse::<i64>().context("invalid thread id")? as i32,
+            ));
             Ok((chat_id, Some(thread_id)))
         }
         _ => {
@@ -1235,7 +1234,10 @@ fn build_metadata(
         .unwrap_or_else(|| chat_type.to_string());
     let channel_name = match (
         message.thread_id,
-        message.thread_id.map(|id| id.0.0 != GENERAL_TOPIC_ID).unwrap_or(false),
+        message
+            .thread_id
+            .map(|id| id.0.0 != GENERAL_TOPIC_ID)
+            .unwrap_or(false),
     ) {
         (Some(thread_id), true) => format!("{} #{thread_id}", channel_name),
         _ => channel_name,
@@ -1694,15 +1696,14 @@ async fn send_plain_text(
 /// environment. Defaults to enabled; the disabling values are `0`, `false`,
 /// `no`, and `off` (case-insensitive, surrounding whitespace ignored).
 fn rich_messages_enabled() -> bool {
-    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-        match std::env::var(TELEGRAM_RICH_MESSAGES_ENV) {
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| match std::env::var(TELEGRAM_RICH_MESSAGES_ENV) {
             Ok(value) => {
                 let normalized = value.trim().to_ascii_lowercase();
                 !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
             }
             Err(_) => true,
-        }
-    });
+        });
     *ENABLED
 }
 

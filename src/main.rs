@@ -2300,10 +2300,8 @@ async fn initialize_agents(
             spacebot::memory::MemoryStore::with_agent_id(db.sqlite.clone(), &agent_config.id);
         let project_store = global_project_store.clone();
 
-        let mut memory_search = spacebot::memory::MemorySearch::new(
-            memory_store,
-            embedding_model.clone(),
-        );
+        let mut memory_search =
+            spacebot::memory::MemorySearch::new(memory_store, embedding_model.clone());
         memory_search = memory_search.with_chronicle_table(
             spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone()),
         );

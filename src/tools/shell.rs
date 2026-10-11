@@ -262,7 +262,9 @@ fn spawn_quiesce_watchdog(
                                 tracing::warn!(%err, "failed to reap child process during quiesce detection");
                             }
                             Err(_) => {
-                                tracing::warn!("timed out reaping child process during quiesce detection");
+                                tracing::warn!(
+                                    "timed out reaping child process during quiesce detection"
+                                );
                             }
                         }
                     }
@@ -720,12 +722,15 @@ pub async fn shell(
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = tokio::time::timeout(tokio::time::Duration::from_secs(60), output_managed(&mut cmd))
-        .await
-        .map_err(|_| crate::error::AgentError::Other(anyhow::anyhow!("Command timed out")))?
-        .map_err(|e| {
-            crate::error::AgentError::Other(anyhow::anyhow!("Failed to execute command: {e}"))
-        })?;
+    let output = tokio::time::timeout(
+        tokio::time::Duration::from_secs(60),
+        output_managed(&mut cmd),
+    )
+    .await
+    .map_err(|_| crate::error::AgentError::Other(anyhow::anyhow!("Command timed out")))?
+    .map_err(|e| {
+        crate::error::AgentError::Other(anyhow::anyhow!("Failed to execute command: {e}"))
+    })?;
 
     Ok(ShellResult {
         success: output.status.success(),
