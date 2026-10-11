@@ -118,8 +118,26 @@ impl SystemInfo {
         let mut output = String::from("## System\n");
         output.push_str(&format!("Time: {current_time_line}\n"));
         output.push_str(&format!("Model: {}\n", self.worker_model));
-        output.push_str(&format!("Context: {} tokens\n", self.context_window));
+        output.push_str(&format!(
+            "Context: {}\n",
+            context_window_label(self.context_window)
+        ));
         output
+    }
+}
+
+/// Human-readable form of a context window.
+///
+/// Rendered from the window the agent actually enforces, which discovery now
+/// feeds — so a resolved 1M-token model reads as `1M tokens` rather than
+/// `1000k tokens`, and an unresolved one still reads as the plain default.
+fn context_window_label(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        format!("{}M tokens", tokens / 1_000_000)
+    } else if tokens >= 1000 {
+        format!("{}k tokens", tokens / 1000)
+    } else {
+        format!("{tokens} tokens")
     }
 }
 
@@ -636,12 +654,11 @@ fn render_system_info(info: &SystemInfo, current_time_line: Option<&str>) -> Str
         }
     }
 
-    // Context + concurrency limits
-    let context_label = if info.context_window >= 1000 {
-        format!("{}k tokens", info.context_window / 1000)
-    } else {
-        format!("{} tokens", info.context_window)
-    };
+    // Context + concurrency limits. The field carries whatever the agent
+    // resolved to — a pinned `context_window`, else the smallest window
+    // discovery learned, else the configured default — so this line reports the
+    // number that is actually enforced, not the shipped placeholder.
+    let context_label = context_window_label(info.context_window);
     output.push_str(&format!(
         "Context: {} | Workers: max {} | Branches: max {}\n",
         context_label, info.max_workers, info.max_branches
@@ -694,9 +711,36 @@ fn render_system_info(info: &SystemInfo, current_time_line: Option<&str>) -> Str
 #[cfg(test)]
 mod tests {
     use super::StatusBlock;
+    use super::{SystemInfo, context_window_label};
     use crate::{AgentId, ChannelId, ProcessEvent};
     use std::sync::Arc;
     use uuid::Uuid;
+
+    /// The context line reports whatever window the agent resolved to. Once
+    /// discovery feeds that field, a 1M-token model must read as `1M tokens`
+    /// rather than `1000k`, and an unresolved agent must still read as the
+    /// plain configured default.
+    #[test]
+    fn the_context_line_reports_the_window_in_force() {
+        assert_eq!(context_window_label(1_000_000), "1M tokens");
+        assert_eq!(context_window_label(128_000), "128k tokens");
+        assert_eq!(context_window_label(900), "900 tokens");
+
+        let mut info = SystemInfo {
+            worker_model: "je/deepseek-v4.1-flash".to_string(),
+            context_window: 1_000_000,
+            ..Default::default()
+        };
+        let rendered = info.render_for_worker("t");
+        assert!(
+            rendered.contains("Context: 1M tokens"),
+            "the worker status must carry the resolved window, got: {rendered}"
+        );
+
+        // Nothing discovered: the configured default still renders plainly.
+        info.context_window = 128_000;
+        assert!(info.render_for_worker("t").contains("Context: 128k tokens"));
+    }
 
     fn compaction_started(kind: &str) -> ProcessEvent {
         ProcessEvent::CompactionStarted {
