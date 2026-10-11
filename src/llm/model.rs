@@ -75,9 +75,7 @@ where
 {
     match tokio::time::timeout(timeout, stream.next()).await {
         Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
-        Ok(Some(Err(error))) => Some(Err(format!(
-            "{provider_label} stream read failed: {error}"
-        ))),
+        Ok(Some(Err(error))) => Some(Err(format!("{provider_label} stream read failed: {error}"))),
         Ok(None) => None,
         Err(_) => Some(Err(format!(
             "{provider_label} stream stalled: no data for {}s (read timeout)",
@@ -6111,8 +6109,9 @@ mod stream_stall_tests {
     /// reach the generator — only the never-ending read is new.
     #[tokio::test]
     async fn chunks_and_read_errors_pass_through_unchanged() {
-        let mut chunks =
-            futures::stream::iter(vec![Ok::<Vec<u8>, std::io::Error>(b"data: {}\n\n".to_vec())]);
+        let mut chunks = futures::stream::iter(vec![Ok::<Vec<u8>, std::io::Error>(
+            b"data: {}\n\n".to_vec(),
+        )]);
         let chunk = next_chunk_with_stall_timeout(
             &mut chunks,
             std::time::Duration::from_millis(50),

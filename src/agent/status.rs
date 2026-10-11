@@ -377,10 +377,7 @@ impl StatusBlock {
     /// spawn map, so cancellation and completion stay auditable; a pruned branch
     /// simply stops being advertised as running. Returns how many entries were
     /// pruned.
-    pub fn retain_live_branches(
-        &mut self,
-        live: &std::collections::HashSet<BranchId>,
-    ) -> usize {
+    pub fn retain_live_branches(&mut self, live: &std::collections::HashSet<BranchId>) -> usize {
         let before = self.active_branches.len();
         self.active_branches
             .retain(|branch| live.contains(&branch.id));
