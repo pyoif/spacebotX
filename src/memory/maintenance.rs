@@ -1,7 +1,7 @@
 //! Memory maintenance: decay, prune, merge, reindex.
 
 use crate::error::Result;
-use crate::memory::{EmbeddingModel, EmbeddingTable, Memory, MemoryStore, MemoryType};
+use crate::memory::{EmbeddingModel, Memory, MemoryStore, MemoryType, MemoryVectorTable};
 use anyhow::Context;
 
 use sqlx::Row;
@@ -44,7 +44,7 @@ impl Default for MaintenanceConfig {
 /// Run maintenance tasks on the memory store.
 pub async fn run_maintenance(
     memory_store: &MemoryStore,
-    embedding_table: &EmbeddingTable,
+    embedding_table: &MemoryVectorTable,
     embedding_model: &Arc<EmbeddingModel>,
     config: &MaintenanceConfig,
 ) -> Result<MaintenanceReport> {
@@ -64,7 +64,7 @@ pub async fn run_maintenance(
 /// The signal allows maintenance to exit quickly when the caller decides to stop it.
 pub async fn run_maintenance_with_cancel(
     memory_store: &MemoryStore,
-    embedding_table: &EmbeddingTable,
+    embedding_table: &MemoryVectorTable,
     embedding_model: &Arc<EmbeddingModel>,
     config: &MaintenanceConfig,
     mut maintenance_cancel_rx: watch::Receiver<bool>,
@@ -193,7 +193,7 @@ async fn prune_memories(
 /// Merge near-duplicate memories.
 async fn merge_similar_memories(
     memory_store: &MemoryStore,
-    embedding_table: &EmbeddingTable,
+    embedding_table: &MemoryVectorTable,
     embedding_model: &Arc<EmbeddingModel>,
     similarity_threshold: f32,
     maintenance_cancel_rx: &mut watch::Receiver<bool>,
@@ -339,7 +339,7 @@ fn merged_memory_content(winner: String, loser: &str) -> String {
 
 async fn merge_pair(
     memory_store: &MemoryStore,
-    embedding_table: &EmbeddingTable,
+    embedding_table: &MemoryVectorTable,
     embedding_model: &Arc<EmbeddingModel>,
     survivor: &Memory,
     merged: &Memory,
@@ -369,11 +369,7 @@ async fn merge_pair(
     .await?;
     maintenance_cancelable_op(
         maintenance_cancel_rx,
-        embedding_table.store(
-            &updated_survivor.id,
-            &updated_survivor.content,
-            &updated_survivor_embedding,
-        ),
+        embedding_table.store(&updated_survivor.id, &updated_survivor_embedding),
     )
     .await?;
     maintenance_cancelable_op(maintenance_cancel_rx, embedding_table.delete(&merged.id)).await?;
@@ -489,7 +485,6 @@ mod tests {
     use super::*;
     use crate::memory::{Association, RelationType};
     use std::sync::Arc;
-    use tempfile::tempdir;
     use tokio::time::Duration;
 
     fn shared_embedding_model() -> Arc<crate::memory::EmbeddingModel> {
@@ -498,7 +493,7 @@ mod tests {
 
     async fn create_memory_with_embedding(
         store: &MemoryStore,
-        embedding_table: &crate::memory::lance::EmbeddingTable,
+        embedding_table: &MemoryVectorTable,
         content: &str,
         memory_type: MemoryType,
         importance: f32,
@@ -508,7 +503,7 @@ mod tests {
         store.save(&memory).await.expect("failed to save memory");
 
         embedding_table
-            .store(&memory.id, &memory.content, &embedding)
+            .store(&memory.id, &embedding)
             .await
             .expect("failed to store embedding");
 
@@ -519,14 +514,7 @@ mod tests {
     async fn merges_near_duplicate_memories_and_transfers_associations() {
         let store = MemoryStore::connect_in_memory().await;
 
-        let dir = tempdir().expect("failed to create temp dir");
-        let lance_conn = lancedb::connect(dir.path().to_str().expect("temp path"))
-            .execute()
-            .await
-            .expect("failed to connect to lancedb");
-        let embedding_table = crate::memory::EmbeddingTable::open_or_create(&lance_conn)
-            .await
-            .expect("failed to create embedding table");
+        let embedding_table = crate::memory::MemoryVectorTable::new(store.pool().clone());
 
         let survivor = create_memory_with_embedding(
             &store,
@@ -659,14 +647,7 @@ mod tests {
     async fn merges_multiple_duplicates_into_one_survivor_in_single_pass() {
         let store = MemoryStore::connect_in_memory().await;
 
-        let dir = tempdir().expect("failed to create temp dir");
-        let lance_conn = lancedb::connect(dir.path().to_str().expect("temp path"))
-            .execute()
-            .await
-            .expect("failed to connect to lancedb");
-        let embedding_table = crate::memory::EmbeddingTable::open_or_create(&lance_conn)
-            .await
-            .expect("failed to create embedding table");
+        let embedding_table = crate::memory::MemoryVectorTable::new(store.pool().clone());
 
         let survivor = create_memory_with_embedding(
             &store,
@@ -811,14 +792,7 @@ mod tests {
     async fn run_maintenance_with_cancel_stops_when_cancel_requested() {
         let store = MemoryStore::connect_in_memory().await;
 
-        let dir = tempdir().expect("failed to create temp dir");
-        let lance_conn = lancedb::connect(dir.path().to_str().expect("temp path"))
-            .execute()
-            .await
-            .expect("failed to connect to lancedb");
-        let embedding_table = crate::memory::EmbeddingTable::open_or_create(&lance_conn)
-            .await
-            .expect("failed to create embedding table");
+        let embedding_table = crate::memory::MemoryVectorTable::new(store.pool().clone());
 
         let (_cancel_tx, maintenance_cancel_rx) = tokio::sync::watch::channel(true);
         let embedding_model = shared_embedding_model();
@@ -850,14 +824,7 @@ mod tests {
     #[tokio::test]
     async fn run_maintenance_rejects_invalid_configuration_ranges() {
         let store = MemoryStore::connect_in_memory().await;
-        let dir = tempdir().expect("failed to create temp dir");
-        let lance_conn = lancedb::connect(dir.path().to_str().expect("temp path"))
-            .execute()
-            .await
-            .expect("failed to connect to lancedb");
-        let embedding_table = crate::memory::EmbeddingTable::open_or_create(&lance_conn)
-            .await
-            .expect("failed to create embedding table");
+        let embedding_table = crate::memory::MemoryVectorTable::new(store.pool().clone());
 
         let invalid_config = MaintenanceConfig {
             prune_threshold: 0.2,

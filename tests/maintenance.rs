@@ -3,7 +3,6 @@
 use spacebot::memory::maintenance::{run_maintenance, run_maintenance_with_cancel};
 use spacebot::memory::{MemoryStore, RelationType, maintenance::MaintenanceConfig};
 use std::sync::{Arc, OnceLock};
-use tempfile::tempdir;
 use tokio::sync::watch;
 
 fn shared_embedding_model() -> Arc<spacebot::memory::EmbeddingModel> {
@@ -20,9 +19,8 @@ fn shared_embedding_model() -> Arc<spacebot::memory::EmbeddingModel> {
 
 async fn make_memory_maintenance_fixture() -> (
     std::sync::Arc<MemoryStore>,
-    spacebot::memory::EmbeddingTable,
+    spacebot::memory::MemoryVectorTable,
     Arc<spacebot::memory::EmbeddingModel>,
-    tempfile::TempDir,
 ) {
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .in_memory(true)
@@ -37,23 +35,18 @@ async fn make_memory_maintenance_fixture() -> (
         .await
         .expect("failed to run migrations");
 
-    let store: std::sync::Arc<MemoryStore> = MemoryStore::new(pool);
+    let store: std::sync::Arc<MemoryStore> = MemoryStore::new(pool.clone());
 
-    let dir = tempdir().expect("failed to create temp dir");
-    let lance_conn = lancedb::connect(dir.path().to_str().expect("temp path"))
-        .execute()
-        .await
-        .expect("failed to connect to lancedb");
-    let embedding_table = spacebot::memory::EmbeddingTable::open_or_create(&lance_conn)
-        .await
-        .expect("failed to create embedding table");
+    // Vectors live in the store's own SQLite database now — no separate
+    // LanceDB directory to create or keep alive.
+    let embedding_table = spacebot::memory::MemoryVectorTable::new(pool);
 
-    (store, embedding_table, shared_embedding_model(), dir)
+    (store, embedding_table, shared_embedding_model())
 }
 
 #[tokio::test]
 async fn maintenance_run_merges_duplicate_memory_and_links_updates_edge() {
-    let (store, embedding_table, embedding_model, _dir_guard) =
+    let (store, embedding_table, embedding_model) =
         make_memory_maintenance_fixture().await;
 
     let survivor = {
@@ -67,7 +60,7 @@ async fn maintenance_run_merges_duplicate_memory_and_links_updates_edge() {
             .await
             .expect("failed to save survivor memory");
         embedding_table
-            .store(&memory.id, &memory.content, &vec![1.0; 384])
+            .store(&memory.id, &vec![1.0; 384])
             .await
             .expect("failed to store survivor embedding");
         memory
@@ -84,7 +77,7 @@ async fn maintenance_run_merges_duplicate_memory_and_links_updates_edge() {
             .await
             .expect("failed to save duplicate memory");
         embedding_table
-            .store(&memory.id, &memory.content, &vec![1.0; 384])
+            .store(&memory.id, &vec![1.0; 384])
             .await
             .expect("failed to store duplicate embedding");
         memory
@@ -99,7 +92,7 @@ async fn maintenance_run_merges_duplicate_memory_and_links_updates_edge() {
             .await
             .expect("failed to save related memory");
         embedding_table
-            .store(&memory.id, &memory.content, &vec![0.0; 384])
+            .store(&memory.id, &vec![0.0; 384])
             .await
             .expect("failed to store related embedding");
         memory
@@ -177,7 +170,7 @@ async fn maintenance_run_merges_duplicate_memory_and_links_updates_edge() {
 
 #[tokio::test]
 async fn maintenance_run_can_be_cancelled() {
-    let (store, embedding_table, embedding_model, _dir_guard) =
+    let (store, embedding_table, embedding_model) =
         make_memory_maintenance_fixture().await;
     let maintenance_config = MaintenanceConfig::default();
 
@@ -213,7 +206,7 @@ async fn maintenance_run_can_be_cancelled() {
 
 #[tokio::test]
 async fn maintenance_config_validation_rejects_negative_min_age() {
-    let (store, embedding_table, embedding_model, _dir_guard) =
+    let (store, embedding_table, embedding_model) =
         make_memory_maintenance_fixture().await;
 
     let result = run_maintenance(

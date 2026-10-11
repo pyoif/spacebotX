@@ -63,19 +63,12 @@ async fn bootstrap_deps() -> anyhow::Result<(spacebot::AgentDeps, spacebot::conf
 
     let memory_store = spacebot::memory::MemoryStore::new(db.sqlite.clone());
 
-    let embedding_table = spacebot::memory::EmbeddingTable::open_or_create(&db.lance)
-        .await
-        .context("failed to init embedding table")?;
-
-    if let Err(error) = embedding_table.ensure_fts_index().await {
-        eprintln!("warning: FTS index creation failed: {error}");
-    }
-
-    let memory_search = Arc::new(spacebot::memory::MemorySearch::new(
-        memory_store,
-        embedding_table,
-        embedding_model,
-    ));
+    // Vectors live in the same SQLite database as the memories; the chronicle
+    // table mirrors the production wiring in `main.rs`.
+    let memory_search = Arc::new(
+        spacebot::memory::MemorySearch::new(memory_store, embedding_model)
+            .with_chronicle_table(spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone())),
+    );
     let task_store = Arc::new(spacebot::tasks::TaskStore::new(instance_pool.clone()));
 
     let identity = spacebot::identity::Identity::load(&agent_config.identity_dir).await;

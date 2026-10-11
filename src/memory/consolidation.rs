@@ -20,7 +20,7 @@
 //! save-never-fails. Batches are serialized per partition — one consolidator
 //! at a time.
 
-use crate::memory::{EmbeddingModel, EmbeddingTable, MemoryStore, MemoryType};
+use crate::memory::{EmbeddingModel, MemoryStore, MemoryType, MemoryVectorTable};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -195,7 +195,7 @@ pub struct ConsolidationReport {
 pub async fn check_save(
     state: &ConsolidationState,
     store: &MemoryStore,
-    embedding_table: &EmbeddingTable,
+    embedding_table: &MemoryVectorTable,
     memory_id: &str,
     memory_type: MemoryType,
     cap: usize,
@@ -266,7 +266,7 @@ struct PreparedOp {
 pub async fn execute_batch(
     state: &ConsolidationState,
     store: &MemoryStore,
-    embedding_table: &EmbeddingTable,
+    embedding_table: &MemoryVectorTable,
     embedding_model: &Arc<EmbeddingModel>,
     partition: &str,
     batch: &[ConsolidateOp],
@@ -390,10 +390,7 @@ pub async fn execute_batch(
     for (survivor_id, content) in &reembed {
         match embedding_model.embed_one(content).await {
             Ok(embedding) => {
-                if let Err(error) = embedding_table
-                    .store(survivor_id, content, &embedding)
-                    .await
-                {
+                if let Err(error) = embedding_table.store(survivor_id, &embedding).await {
                     tracing::warn!(
                         %survivor_id,
                         %error,
@@ -452,16 +449,11 @@ mod tests {
     use super::*;
     use crate::memory::{Memory, RelationType};
 
-    async fn lance_fixture() -> (EmbeddingTable, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let connection = lancedb::connect(dir.path().to_str().expect("temp path"))
-            .execute()
-            .await
-            .expect("lancedb connect");
-        let table = EmbeddingTable::open_or_create(&connection)
-            .await
-            .expect("embedding table");
-        (table, dir)
+    /// A store-backed vector table for the consolidation tests. Vectors live in
+    /// the store's own SQLite database now, so the "table" is just a handle to
+    /// the same pool and needs no temp directory of its own.
+    fn vector_table(store: &MemoryStore) -> MemoryVectorTable {
+        MemoryVectorTable::new(store.pool().clone())
     }
 
     async fn save_fact(store: &MemoryStore, content: &str) -> Memory {
@@ -473,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn failing_op_rolls_back_the_whole_batch() {
         let store = MemoryStore::connect_in_memory().await;
-        let (embedding_table, _dir) = lance_fixture().await;
+        let embedding_table = vector_table(&store);
         let embedding_model = crate::memory::embedding::shared_test_model();
         let state = ConsolidationState::default();
 
@@ -521,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_partition_is_rejected() {
         let store = MemoryStore::connect_in_memory().await;
-        let (embedding_table, _dir) = lance_fixture().await;
+        let embedding_table = vector_table(&store);
         let embedding_model = crate::memory::embedding::shared_test_model();
         let state = ConsolidationState::default();
 
@@ -545,7 +537,7 @@ mod tests {
     #[tokio::test]
     async fn op_outside_the_partition_is_rejected() {
         let store = MemoryStore::connect_in_memory().await;
-        let (embedding_table, _dir) = lance_fixture().await;
+        let embedding_table = vector_table(&store);
         let embedding_model = crate::memory::embedding::shared_test_model();
         let state = ConsolidationState::default();
 
@@ -580,7 +572,7 @@ mod tests {
     #[tokio::test]
     async fn successful_batch_keeps_absorbed_row_as_provenance() {
         let store = MemoryStore::connect_in_memory().await;
-        let (embedding_table, _dir) = lance_fixture().await;
+        let embedding_table = vector_table(&store);
         let embedding_model = crate::memory::embedding::shared_test_model();
         let state = ConsolidationState::default();
 

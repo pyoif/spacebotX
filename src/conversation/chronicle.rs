@@ -436,10 +436,10 @@ impl ChronicleStore {
 
         let insert = sqlx::query(
             "INSERT INTO channel_chronicle_checkpoints \
-             (id, channel_id, seq, level, kind, title, summary, covers_from_at, covers_to_at, \
+             (id, channel_id, seq, level, kind, title, summary, search_text, covers_from_at, covers_to_at, \
               covers_from_message_id, covers_to_message_id, covers_from_seq, covers_to_seq, \
               message_count, token_estimate, rolls_up_from_seq, rolls_up_to_seq, model, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&new.channel_id)
@@ -448,6 +448,10 @@ impl ChronicleStore {
         .bind(new.kind.as_str())
         .bind(&new.title)
         .bind(&new.summary)
+        .bind(crate::memory::sqlite_index::chronicle_search_text(
+            &new.title,
+            &new.summary,
+        ))
         .bind(sql_timestamp(new.covers_from_at))
         .bind(sql_timestamp(new.covers_to_at))
         .bind(&new.covers_from_message_id)

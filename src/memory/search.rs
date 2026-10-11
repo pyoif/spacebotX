@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::memory::types::{Memory, MemorySearchResult, MemoryType, RelationType};
 use crate::memory::{
-    ChronicleEmbeddingTable, ChronicleHit, EmbeddingModel, EmbeddingTable, MemoryStore,
+    ChronicleHit, ChronicleVectorTable, EmbeddingModel, MemoryStore, MemoryVectorTable,
 };
 
 use std::collections::HashMap;
@@ -44,13 +44,13 @@ pub enum SearchSort {
 /// Bundles all memory search dependencies.
 pub struct MemorySearch {
     store: Arc<MemoryStore>,
-    embedding_table: EmbeddingTable,
+    embedding_table: MemoryVectorTable,
     embedding_model: Arc<EmbeddingModel>,
     /// Shared write-time consolidation state (debt + partition locks).
     consolidation: Arc<crate::memory::consolidation::ConsolidationState>,
-    /// Chronicle checkpoint embeddings (level-0 spans). Optional: absent in
+    /// Chronicle checkpoint vectors (level-0 spans). Optional: absent in
     /// tests and minimal harnesses until wired via `with_chronicle_table`.
-    chronicle_table: Option<ChronicleEmbeddingTable>,
+    chronicle_table: Option<ChronicleVectorTable>,
 }
 
 impl Clone for MemorySearch {
@@ -75,23 +75,24 @@ impl std::fmt::Debug for MemorySearch {
 
 impl MemorySearch {
     /// Create a new MemorySearch instance.
-    pub fn new(
-        store: Arc<MemoryStore>,
-        embedding_table: EmbeddingTable,
-        embedding_model: Arc<EmbeddingModel>,
-    ) -> Self {
+    ///
+    /// The vector tables are derived from the store's own pool: vectors live in
+    /// the same SQLite database as the rows they describe, so there is no second
+    /// store to open (or to fall out of sync with).
+    pub fn new(store: Arc<MemoryStore>, embedding_model: Arc<EmbeddingModel>) -> Self {
+        let pool = store.pool().clone();
         Self {
             store,
-            embedding_table,
+            embedding_table: MemoryVectorTable::new(pool.clone()),
             embedding_model,
             consolidation: Arc::new(crate::memory::consolidation::ConsolidationState::default()),
             chronicle_table: None,
         }
     }
 
-    /// Attach the chronicle embedding table for unified labeled search and
+    /// Attach the chronicle vector table for unified labeled search and
     /// checkpoint provenance (1.7).
-    pub fn with_chronicle_table(mut self, table: ChronicleEmbeddingTable) -> Self {
+    pub fn with_chronicle_table(mut self, table: ChronicleVectorTable) -> Self {
         self.chronicle_table = Some(table);
         self
     }
@@ -110,16 +111,7 @@ impl MemorySearch {
         }
         let text = format!("{} — {}", checkpoint.title, checkpoint.summary);
         let embedding = self.embedding_model.embed_one(&text).await?;
-        table
-            .store(
-                &checkpoint.id,
-                &checkpoint.title,
-                &checkpoint.channel_id,
-                checkpoint.seq,
-                &text,
-                &embedding,
-            )
-            .await
+        table.store(&checkpoint.id, &embedding).await
     }
 
     /// One-time backfill: embed every level-0 checkpoint that lacks a row.
@@ -158,6 +150,53 @@ impl MemorySearch {
         crate::memory::sqlite_index::backfill_search_text(pool).await
     }
 
+    /// One-time backfill of the memory vectors that the read path needs but the
+    /// SQLite migration could not produce (SQL cannot embed). Idempotent: only
+    /// non-forgotten memories with no vector under the current model are
+    /// embedded, so a second run does nothing.
+    ///
+    /// Returns how many vectors were written. A memory whose embedding fails is
+    /// skipped with a warning rather than aborting the pass — text search is
+    /// already live and every other memory should still warm up.
+    pub async fn backfill_memory_embeddings(&self, pool: &sqlx::SqlitePool) -> Result<usize> {
+        let pending =
+            crate::memory::sqlite_index::pending_memory_embeddings(pool, crate::memory::sqlite_index::EMBEDDING_MODEL_ID)
+                .await?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        let store = crate::memory::MemoryStore::new(pool.clone());
+        let mut embedded = 0usize;
+        for memory_id in pending {
+            let Some(memory) = store.load(&memory_id).await? else {
+                continue;
+            };
+            if memory.forgotten {
+                continue;
+            }
+            match self.embedding_model.embed_one(&memory.content).await {
+                Ok(embedding) => {
+                    if let Err(error) = self.embedding_table.store(&memory.id, &embedding).await {
+                        tracing::warn!(
+                            %memory_id,
+                            %error,
+                            "failed to store backfilled memory embedding"
+                        );
+                    } else {
+                        embedded += 1;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%memory_id, %error, "failed to embed memory during backfill");
+                }
+            }
+        }
+
+        tracing::info!(embedded, "memory embedding backfill complete");
+        Ok(embedded)
+    }
+
     /// Unified labeled search: memory results (with checkpoint range-join
     /// provenance) plus chronicle checkpoint hits, when the chronicle table
     /// is wired. Checkpoint hits are labeled by title + seq. Queryless modes
@@ -193,7 +232,7 @@ impl MemorySearch {
     }
 
     /// Get a reference to the embedding table.
-    pub fn embedding_table(&self) -> &EmbeddingTable {
+    pub fn embedding_table(&self) -> &MemoryVectorTable {
         &self.embedding_table
     }
 
@@ -308,13 +347,17 @@ impl MemorySearch {
         let mut fts_results = Vec::new();
         let mut graph_results = Vec::new();
 
-        // 1. Full-text search via LanceDB
-        // FTS requires an inverted index. If the index doesn't exist yet (empty
-        // table, first run) this will fail — fall back to vector + graph search.
-        match self
-            .embedding_table
-            .text_search(query, config.max_results_per_source)
-            .await
+        // 1. Full-text search via SQLite FTS5
+        // The index is rebuilt by triggers on the same rows the store writes, so
+        // unlike the LanceDB inverted index it cannot be "not built yet". The
+        // `match` is kept for the one failure mode FTS5 still has: a malformed
+        // MATCH expression, which degrades to vector + graph rather than erroring.
+        match crate::memory::sqlite_index::memory_text_search(
+            self.store.pool(),
+            query,
+            config.max_results_per_source,
+        )
+        .await
         {
             Ok(fts_matches) => {
                 for (memory_id, score) in fts_matches {
@@ -333,7 +376,7 @@ impl MemorySearch {
             }
         }
 
-        // 2. Vector similarity search via LanceDB
+        // 2. Vector similarity search via SQLite (exact dot-product scan)
         let query_embedding = self.embedding_model.embed_one(query).await?;
         match self
             .embedding_table
@@ -341,8 +384,7 @@ impl MemorySearch {
             .await
         {
             Ok(vector_matches) => {
-                for (memory_id, distance) in vector_matches {
-                    let similarity = 1.0 - distance;
+                for (memory_id, similarity) in vector_matches {
                     if let Some(memory) = self.store.load(&memory_id).await?
                         && !memory.forgotten
                     {
@@ -656,9 +698,8 @@ mod tests {
         assert!(curated.is_empty());
     }
 
-    // Non-hybrid modes only need SQLite, no LanceDB/embeddings.
-    // We construct a MemorySearch with dummy LanceDB/embedding fields
-    // and only exercise code paths that don't touch them.
+    // Non-hybrid modes only need SQLite: the vector tables are derived from the
+    // store's own pool, so no separate fixture is required.
 
     async fn setup_search_with_memories() -> (Arc<crate::memory::MemoryStore>, Vec<Memory>) {
         let store = crate::memory::MemoryStore::connect_in_memory().await;
@@ -714,15 +755,9 @@ mod tests {
     async fn test_metadata_search_recent() {
         let (store, _memories) = setup_search_with_memories().await;
 
-        // Construct MemorySearch with dummy lance/embedding (we won't use them)
-        let lance_dir = tempfile::tempdir().unwrap();
-        let lance_conn = lancedb::connect(lance_dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        let embedding_table = EmbeddingTable::open_or_create(&lance_conn).await.unwrap();
+        // Construct MemorySearch with the store-backed vector table (unused here)
         let embedding_model = crate::memory::embedding::shared_test_model();
-        let search = MemorySearch::new(store, embedding_table, embedding_model);
+        let search = MemorySearch::new(store, embedding_model);
 
         let config = SearchConfig {
             mode: SearchMode::Recent,
@@ -743,14 +778,8 @@ mod tests {
     async fn test_metadata_search_important() {
         let (store, _memories) = setup_search_with_memories().await;
 
-        let lance_dir = tempfile::tempdir().unwrap();
-        let lance_conn = lancedb::connect(lance_dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        let embedding_table = EmbeddingTable::open_or_create(&lance_conn).await.unwrap();
         let embedding_model = crate::memory::embedding::shared_test_model();
-        let search = MemorySearch::new(store, embedding_table, embedding_model);
+        let search = MemorySearch::new(store, embedding_model);
 
         let config = SearchConfig {
             mode: SearchMode::Important,
@@ -768,14 +797,8 @@ mod tests {
     async fn test_metadata_search_typed() {
         let (store, _memories) = setup_search_with_memories().await;
 
-        let lance_dir = tempfile::tempdir().unwrap();
-        let lance_conn = lancedb::connect(lance_dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        let embedding_table = EmbeddingTable::open_or_create(&lance_conn).await.unwrap();
         let embedding_model = crate::memory::embedding::shared_test_model();
-        let search = MemorySearch::new(store, embedding_table, embedding_model);
+        let search = MemorySearch::new(store, embedding_model);
 
         let config = SearchConfig {
             mode: SearchMode::Typed,
@@ -793,14 +816,8 @@ mod tests {
     async fn test_metadata_search_typed_empty() {
         let (store, _memories) = setup_search_with_memories().await;
 
-        let lance_dir = tempfile::tempdir().unwrap();
-        let lance_conn = lancedb::connect(lance_dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        let embedding_table = EmbeddingTable::open_or_create(&lance_conn).await.unwrap();
         let embedding_model = crate::memory::embedding::shared_test_model();
-        let search = MemorySearch::new(store, embedding_table, embedding_model);
+        let search = MemorySearch::new(store, embedding_model);
 
         let config = SearchConfig {
             mode: SearchMode::Typed,

@@ -849,31 +849,10 @@ pub async fn create_agent_internal(
     };
 
     let memory_store = crate::memory::MemoryStore::new(db.sqlite.clone());
-    let embedding_table = crate::memory::EmbeddingTable::open_or_create(&db.lance)
-        .await
-        .map_err(|error| {
-            tracing::error!(%error, agent_id = %agent_id, "failed to init embeddings");
-            format!("failed to init embeddings: {error}")
-        })?;
-
-    if let Err(error) = embedding_table.ensure_fts_index().await {
-        tracing::warn!(%error, agent_id = %agent_id, "failed to create FTS index");
-    }
-
     let memory_search = std::sync::Arc::new(
-        crate::memory::MemorySearch::new(memory_store, embedding_table, embedding_model)
-            .with_chronicle_table(
-                crate::memory::ChronicleEmbeddingTable::open_or_create(&db.lance)
-                    .await
-                    .map_err(|error| {
-                        tracing::error!(
-                            %error,
-                            agent_id = %agent_id,
-                            "failed to init chronicle embeddings"
-                        );
-                        format!("failed to init chronicle embeddings: {error}")
-                    })?,
-            ),
+        crate::memory::MemorySearch::new(memory_store, embedding_model).with_chronicle_table(
+            crate::memory::ChronicleVectorTable::new(db.sqlite.clone()),
+        ),
     );
     if let Err(error) = memory_search
         .backfill_chronicle_embeddings(&db.sqlite)

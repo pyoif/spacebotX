@@ -2292,53 +2292,21 @@ async fn initialize_agents(
             settings_store.prompt_debug_capture(),
         ));
 
-        // Per-agent memory system
+        // Per-agent memory system. Search vectors live in the same SQLite
+        // database as the memories they describe, so there is no second store to
+        // open and nothing to fall out of sync: `MemorySearch::new` derives both
+        // vector tables from this pool.
         let memory_store =
             spacebot::memory::MemoryStore::with_agent_id(db.sqlite.clone(), &agent_config.id);
         let project_store = global_project_store.clone();
-        let embedding_table = spacebot::memory::EmbeddingTable::open_or_create(&db.lance)
-            .await
-            .with_context(|| {
-                format!("failed to init embeddings for agent '{}'", agent_config.id)
-            })?;
-
-        // Ensure FTS index exists for full-text search queries
-        if let Err(error) = embedding_table.ensure_fts_index().await {
-            tracing::warn!(%error, agent = %agent_config.id, "failed to create FTS index");
-        }
-
-        // Chronicle embeddings are optional: a table that cannot be opened
-        // disables session search for this run instead of aborting startup.
-        let chronicle_table =
-            match spacebot::memory::ChronicleEmbeddingTable::open_or_create(&db.lance).await {
-                Ok(table) => {
-                    if let Err(error) = table.ensure_fts_index().await {
-                        tracing::warn!(
-                            %error,
-                            agent = %agent_config.id,
-                            "failed to create chronicle FTS index"
-                        );
-                    }
-                    Some(table)
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        agent = %agent_config.id,
-                        "failed to init chronicle embeddings; session search disabled this run"
-                    );
-                    None
-                }
-            };
 
         let mut memory_search = spacebot::memory::MemorySearch::new(
             memory_store,
-            embedding_table,
             embedding_model.clone(),
         );
-        if let Some(table) = chronicle_table {
-            memory_search = memory_search.with_chronicle_table(table);
-        }
+        memory_search = memory_search.with_chronicle_table(
+            spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone()),
+        );
         let memory_search = Arc::new(memory_search);
 
         // The analysed `search_text` columns must be complete *before* the read
@@ -2353,7 +2321,10 @@ async fn initialize_agents(
 
         // One-time backfill of level-0 checkpoint embeddings (1.7), off the
         // boot path — it needs the embedding model, and the table serves vector
-        // search while it fills.
+        // search while it fills. The memory-vector backfill joins it: both
+        // classes of vector are now derived from SQLite rows that exist but have
+        // no embedding yet, so until it finishes vector search simply returns
+        // fewer candidates while text search is fully live.
         {
             let memory_search = Arc::clone(&memory_search);
             let pool = db.sqlite.clone();
@@ -2361,6 +2332,9 @@ async fn initialize_agents(
             tokio::spawn(async move {
                 if let Err(error) = memory_search.backfill_chronicle_embeddings(&pool).await {
                     tracing::warn!(%error, %agent, "chronicle embedding backfill failed");
+                }
+                if let Err(error) = memory_search.backfill_memory_embeddings(&pool).await {
+                    tracing::warn!(%error, %agent, "memory embedding backfill failed");
                 }
             });
         }

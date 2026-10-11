@@ -453,7 +453,7 @@ impl Tool for MemorySaveTool {
         match self
             .memory_search
             .embedding_table()
-            .store(&memory.id, &memory.content, &embedding)
+            .store(&memory.id, &embedding)
             .await
         {
             Ok(()) => {
@@ -470,16 +470,9 @@ impl Tool for MemorySaveTool {
             }
         }
 
-        // Ensure the FTS index exists so full_text_search queries work.
-        // Safe to call repeatedly — no-ops if the index already exists.
-        if let Err(error) = self
-            .memory_search
-            .embedding_table()
-            .ensure_fts_index()
-            .await
-        {
-            tracing::warn!(%error, "failed to ensure FTS index after memory save");
-        }
+        // The FTS5 index is maintained by triggers on `memories`, fired inside
+        // the same transaction as the row write above — there is no separate
+        // index to build or keep in sync here.
 
         // Write-time consolidation check. Advisory: the save has already
         // landed; the advice tells the branch about near-duplicates and
@@ -685,21 +678,10 @@ mod tests {
         assert_eq!(summary.chars().count(), crate::EVENT_SUMMARY_MAX_CHARS);
     }
 
-    async fn memory_search_fixture() -> (Arc<MemorySearch>, tempfile::TempDir) {
+    async fn memory_search_fixture() -> Arc<MemorySearch> {
         let store = crate::memory::MemoryStore::connect_in_memory().await;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let connection = lancedb::connect(dir.path().to_str().expect("temp path"))
-            .execute()
-            .await
-            .expect("lancedb connect");
-        let embedding_table = crate::memory::EmbeddingTable::open_or_create(&connection)
-            .await
-            .expect("embedding table");
         let embedding_model = crate::memory::embedding::shared_test_model();
-        (
-            Arc::new(MemorySearch::new(store, embedding_table, embedding_model)),
-            dir,
-        )
+        Arc::new(MemorySearch::new(store, embedding_model))
     }
 
     fn human_args(content: &str, human_id: &str) -> MemorySaveArgs {
@@ -716,7 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn human_anchor_merge_appends_content_and_bumps_updated_at() {
-        let (memory_search, _dir) = memory_search_fixture().await;
+        let memory_search = memory_search_fixture().await;
         let contract_state = Arc::new(
             super::super::memory_persistence_complete::MemoryPersistenceContractState::default(),
         );
@@ -766,7 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn human_anchor_merge_rejects_content_over_the_cap() {
-        let (memory_search, _dir) = memory_search_fixture().await;
+        let memory_search = memory_search_fixture().await;
         let tool = MemorySaveTool::new(memory_search.clone());
         let content = "a".repeat(MAX_MEMORY_CONTENT_BYTES);
 

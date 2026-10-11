@@ -104,13 +104,13 @@ async fn bootstrap(instance_dir: &Path) -> anyhow::Result<AgentDeps> {
         .await
         .expect("instance db connect");
 
-    let memory_search = Arc::new(spacebot::memory::MemorySearch::new(
-        spacebot::memory::MemoryStore::new(db.sqlite.clone()),
-        spacebot::memory::EmbeddingTable::open_or_create(&db.lance)
-            .await
-            .expect("embedding table"),
-        embedding_model,
-    ));
+    let memory_search = Arc::new(
+        spacebot::memory::MemorySearch::new(
+            spacebot::memory::MemoryStore::new(db.sqlite.clone()),
+            embedding_model,
+        )
+        .with_chronicle_table(spacebot::memory::ChronicleVectorTable::new(db.sqlite.clone())),
+    );
 
     let identity = spacebot::identity::Identity::load(&agent_config.workspace).await;
     let prompts = spacebot::prompts::PromptEngine::new("en").expect("prompt engine");

@@ -68,14 +68,15 @@ impl MemoryStore {
 
         sqlx::query(
             r#"
-            INSERT INTO memories (id, content, memory_type, importance, created_at, updated_at,
+            INSERT INTO memories (id, content, search_text, memory_type, importance, created_at, updated_at,
                                  last_accessed_at, access_count, source, channel_id, forgotten,
                                  supersedes_checkpoint_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&memory.id)
         .bind(&memory.content)
+        .bind(crate::memory::analyzer::search_text(&memory.content))
         .bind(memory.memory_type.to_string())
         .bind(memory.importance)
         .bind(memory.created_at)
@@ -149,13 +150,14 @@ impl MemoryStore {
         let result = sqlx::query(
             r#"
             UPDATE memories
-            SET content = ?, memory_type = ?, importance = ?, updated_at = ?,
+            SET content = ?, search_text = ?, memory_type = ?, importance = ?, updated_at = ?,
                 last_accessed_at = ?, access_count = ?, source = ?, channel_id = ?,
                 forgotten = ?, supersedes_checkpoint_id = ?
             WHERE id = ?
             "#,
         )
         .bind(&memory.content)
+        .bind(crate::memory::analyzer::search_text(&memory.content))
         .bind(memory.memory_type.to_string())
         .bind(memory.importance)
         .bind(memory.updated_at)
@@ -769,13 +771,14 @@ pub(crate) async fn merge_memories_in_tx(
     sqlx::query(
         r#"
         UPDATE memories
-        SET content = ?, memory_type = ?, importance = ?, updated_at = ?,
+        SET content = ?, search_text = ?, memory_type = ?, importance = ?, updated_at = ?,
             last_accessed_at = ?, access_count = ?, source = ?, channel_id = ?,
             forgotten = ?, supersedes_checkpoint_id = ?
         WHERE id = ?
         "#,
     )
     .bind(&updated_survivor.content)
+    .bind(crate::memory::analyzer::search_text(&updated_survivor.content))
     .bind(updated_survivor.memory_type.to_string())
     .bind(updated_survivor.importance)
     .bind(updated_survivor.updated_at)
