@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# A push while a run is in flight cancels the older run, so CI minutes go to
+# the newest commit only instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
@@ -17,9 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
+      # No protoc install: the last protoc consumer (lancedb) was dropped in
+      # Stage 3. Verified — no vendored crate's build.rs references protoc, and
+      # the Docker release build has never installed it.
       # Toolchain pinned to match rust-toolchain.toml — bump both together.
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -53,9 +59,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@stable
         with:
