@@ -538,9 +538,14 @@ fn estimate_tokens(text: &str) -> usize {
 
 /// Render Layer 2: Working Memory section for the channel system prompt.
 ///
-/// Produces a markdown block with today's intra-day synthesis paragraphs,
-/// an unsynthesized event tail, yesterday's summary, and this week's summaries.
-/// All rendering is programmatic — no LLM calls on this path.
+/// Produces a markdown block with today's raw event tail, today's intra-day
+/// synthesis paragraphs, yesterday's summary, and this week's summaries. All
+/// rendering is programmatic — no LLM calls on this path.
+///
+/// The raw events are written before any synthesis claims the day's budget, so a
+/// summary can never crowd out the events it summarises. When a day does not
+/// fit, detail degrades with age (full line → one-liner → counted) and the
+/// section discloses coverage rather than scarcity.
 pub async fn render_working_memory(
     store: &WorkingMemoryStore,
     channel_id: &str,
@@ -560,13 +565,6 @@ pub async fn render_working_memory(
     let mut output = String::with_capacity(2048);
     let mut tokens_used: usize = 0;
     let today_budget = budget * 60 / 100; // 60% for today
-    // Reserve a slice of today's budget for the raw unsynthesized event tail.
-    // Synthesis paragraphs render first; without this reserve they can consume
-    // the entire day budget, leaving the tail loop to break on its very first
-    // line and render "(0 of N events shown)". The floor guarantees a tiny
-    // budget still leaves room for at least one tail event.
-    let today_tail_reserve = (today_budget * 25 / 100).max(1);
-    let synthesis_budget = today_budget.saturating_sub(today_tail_reserve);
     let yesterday_budget = budget * 20 / 100; // next 20% for yesterday
     let week_budget = budget * 20 / 100; // remaining 20% for this week
 
@@ -576,30 +574,25 @@ pub async fn render_working_memory(
     writeln!(output, "## Working Memory\n").ok();
     writeln!(output, "### Today ({day_name})").ok();
 
-    // 1. Intra-day synthesis paragraphs for today.
+    // The day's ground truth, fetched once: the event log, the syntheses derived
+    // from it, and the boundary between the two.
     let syntheses = store.get_intraday_syntheses(&today).await?;
-    for synthesis in &syntheses {
-        let time_label = synthesis
-            .time_range_start
-            .with_timezone(&timezone)
-            .format("%H:%M")
-            .to_string();
-        let block = format!("[{time_label}] {}\n", synthesis.summary);
-        let block_tokens = estimate_tokens(&block);
-        if tokens_used + block_tokens > synthesis_budget {
-            break;
-        }
-        write!(output, "{block}").ok();
-        tokens_used += block_tokens;
-    }
-
-    // 2. Unsynthesized event tail (raw events since last synthesis).
     let last_synthesis_end = store.get_last_intraday_synthesis_end(&today).await?;
+    let all_today = store.get_events_for_day(&today).await?;
     let unsynthesized = store.get_events_after(&today, last_synthesis_end).await?;
     let max_tail = config.today_max_unsynthesized_events;
 
+    // 1. The raw tail renders first. A synthesis is a compression of these
+    // events, so letting it spend the day budget ahead of them would let the
+    // summary crowd out the thing it summarises — which is how a dense day came
+    // to render "(0 of N events shown)".
+    let mut events_raw = 0usize;
+    let mut events_compressed = 0usize;
+    let mut events_digested = 0usize;
+    let mut lines: Vec<(String, usize)> = Vec::new();
+
     if !unsynthesized.is_empty() {
-        // Only show the header if there are also synthesis blocks above.
+        // The label belongs to the raw events, so it leads them.
         if !syntheses.is_empty() {
             let since_label = last_synthesis_end
                 .map(|t| t.with_timezone(&timezone).format("%H:%M").to_string())
@@ -607,40 +600,64 @@ pub async fn render_working_memory(
             writeln!(output, "\n**Since {since_label}:**").ok();
         }
 
-        let tail_events: Vec<&WorkingMemoryEvent> = if unsynthesized.len() > max_tail {
-            // Under token pressure, filter by importance.
-            let mut sorted: Vec<&WorkingMemoryEvent> = unsynthesized.iter().collect();
-            sorted.sort_by(|a, b| {
-                b.importance
-                    .partial_cmp(&a.importance)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            sorted.truncate(max_tail);
-            // Re-sort by timestamp for chronological display.
-            sorted.sort_by_key(|e| e.timestamp);
-            sorted
-        } else {
-            unsynthesized.iter().collect()
-        };
+        let detail_lines: Vec<String> = unsynthesized
+            .iter()
+            .map(|event| format_event_line(event, channel_id))
+            .collect();
+        let compact_lines: Vec<String> = unsynthesized
+            .iter()
+            .map(|event| format_event_one_liner(event, channel_id))
+            .collect();
 
-        // Boost events from the current channel: always include them.
-        // Collapse consecutive identical events ("Agent started ×7").
-        let collapsed: Vec<(String, usize)> = {
-            let mut out: Vec<(String, usize)> = Vec::new();
-            for event in &tail_events {
-                let line = format_event_line(event, channel_id);
-                if let Some((last_line, count)) = out.last_mut()
-                    && *last_line == line
-                {
-                    *count += 1;
-                    continue;
-                }
-                out.push((line, 1));
+        // Spend what the day has left from the newest event backwards, so detail
+        // degrades with age: the latest events keep full lines, older ones fall
+        // back to a trimmed line, and the oldest are counted rather than
+        // dropped. `today_max_unsynthesized_events` bounds how many keep a full
+        // line; everything past that is still represented, at a coarser grain.
+        let mut granularity = vec![EventGranularity::Digested; unsynthesized.len()];
+        let mut remaining = today_budget.saturating_sub(tokens_used);
+        let detail_limit = max_tail.max(1);
+        for idx in (0..unsynthesized.len()).rev() {
+            let age_rank = unsynthesized.len() - 1 - idx; // 0 is the newest
+            let detail_cost = estimate_tokens(&detail_lines[idx]);
+            let compact_cost = estimate_tokens(&compact_lines[idx]);
+            if age_rank < detail_limit && detail_cost <= remaining {
+                granularity[idx] = EventGranularity::Detail;
+                remaining -= detail_cost;
+            } else if compact_cost <= remaining {
+                granularity[idx] = EventGranularity::OneLiner;
+                remaining -= compact_cost;
+            } else {
+                granularity[idx] = EventGranularity::Digested;
             }
-            out
-        };
-        let mut events_shown = 0usize;
-        for (line, count) in &collapsed {
+        }
+
+        // Write chronologically, collapsing runs of identical detail lines
+        // ("Agent started ×7"). Collapsing only ever shortens the section, so
+        // the budget reserved above stays an upper bound.
+        for idx in 0..unsynthesized.len() {
+            match granularity[idx] {
+                EventGranularity::Detail => {
+                    events_raw += 1;
+                    let line = detail_lines[idx].clone();
+                    let repeats = matches!(lines.last(), Some((last, _)) if *last == line);
+                    if repeats {
+                        if let Some((_, count)) = lines.last_mut() {
+                            *count += 1;
+                        }
+                    } else {
+                        lines.push((line, 1));
+                    }
+                }
+                EventGranularity::OneLiner => {
+                    events_compressed += 1;
+                    lines.push((compact_lines[idx].clone(), 1));
+                }
+                EventGranularity::Digested => events_digested += 1,
+            }
+        }
+
+        for (line, count) in &lines {
             let rendered = if *count > 1 {
                 format!("{line} ×{count}")
             } else {
@@ -652,18 +669,72 @@ pub async fn render_working_memory(
             }
             writeln!(output, "- {rendered}").ok();
             tokens_used += line_tokens;
-            events_shown += count;
         }
-        // A view discloses its depth: when selection dropped events, say
-        // how many exist so recall knows there is more than the render.
-        if events_shown < unsynthesized.len() {
-            writeln!(
-                output,
-                "({events_shown} of {} events shown)",
-                unsynthesized.len()
-            )
-            .ok();
+        if events_digested > 0 {
+            // Counted, not listed: the events past the day's budget are still
+            // accounted for, so the disclosure below can stay complete.
+            let counted = format!("- (+{events_digested} more events, counted not listed)");
+            tokens_used += estimate_tokens(&counted);
+            writeln!(output, "{counted}").ok();
         }
+    }
+
+    // 2. The day's syntheses then take what the raw events left. When they no
+    // longer fit, they merge into one digest paragraph, so the events they cover
+    // stay represented at a coarser grain instead of disappearing.
+    let mut syntheses_rendered = 0usize;
+    for synthesis in &syntheses {
+        let time_label = synthesis
+            .time_range_start
+            .with_timezone(&timezone)
+            .format("%H:%M")
+            .to_string();
+        let block = format!("[{time_label}] {}\n", synthesis.summary);
+        let block_tokens = estimate_tokens(&block);
+        if tokens_used + block_tokens > today_budget {
+            break;
+        }
+        if syntheses_rendered == 0 && !unsynthesized.is_empty() {
+            writeln!(output, "\n**Earlier today, synthesized:**").ok();
+        }
+        write!(output, "{block}").ok();
+        tokens_used += block_tokens;
+        syntheses_rendered += 1;
+    }
+    if syntheses_rendered < syntheses.len() {
+        let digest = render_synthesis_digest(&syntheses[syntheses_rendered..], &timezone);
+        if !digest.is_empty() {
+            if syntheses_rendered == 0 && !unsynthesized.is_empty() {
+                writeln!(output, "\n**Earlier today, synthesized:**").ok();
+            }
+            tokens_used += estimate_tokens(&digest);
+            write!(output, "{digest}").ok();
+        }
+    }
+
+    // 3. Disclose coverage, not scarcity. Every event of the day is represented
+    // at one of the three grains, so the counts below account for all of them
+    // and "(0 of N events shown)" is unrepresentable rather than unlikely.
+    let total_today = all_today.len();
+    let events_summarized = total_today.saturating_sub(events_raw + events_compressed);
+    let syntheses_in_digest = syntheses_rendered < syntheses.len();
+    if total_today > 0 && (events_compressed > 0 || events_digested > 0 || syntheses_in_digest) {
+        let mut grains: Vec<String> = Vec::new();
+        if events_raw > 0 {
+            grains.push(format!("{events_raw} raw"));
+        }
+        if events_compressed > 0 {
+            grains.push(format!("{events_compressed} compressed"));
+        }
+        if events_summarized > 0 {
+            grains.push(format!("{events_summarized} in digest"));
+        }
+        writeln!(
+            output,
+            "({total_today} of {total_today} covered · {})",
+            grains.join(" + ")
+        )
+        .ok();
     }
 
     // If today is completely empty, note it.
@@ -979,6 +1050,70 @@ fn format_event_line(event: &WorkingMemoryEvent, current_channel_id: &str) -> St
     };
 
     format!("{channel_prefix}{type_label}: {}", event.summary)
+}
+
+/// How much of an event the render could afford.
+///
+/// Detail degrades with age: the newest events keep a full line, older ones fall
+/// back to a trimmed one, and the oldest are counted in the disclosure. Every
+/// grain still represents its event, which is what lets the coverage line be
+/// complete — `Digested` means "counted", never "missing".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventGranularity {
+    /// The full [`format_event_line`] rendering.
+    Detail,
+    /// [`format_event_one_liner`]: the label plus the head of the summary.
+    OneLiner,
+    /// Counted in the coverage disclosure rather than listed.
+    Digested,
+}
+
+/// The trimmed form used when the day's budget cannot afford a full line.
+///
+/// The event's label is kept, so a degraded line stays identifiable as the same
+/// kind of event it always was; only the summary is cut. Truncation is by
+/// `char`, so a summary full of multi-byte text cannot panic.
+fn format_event_one_liner(event: &WorkingMemoryEvent, current_channel_id: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let full = format_event_line(event, current_channel_id);
+    if full.chars().count() <= MAX_CHARS {
+        return full;
+    }
+    let mut trimmed: String = full.chars().take(MAX_CHARS - 1).collect();
+    trimmed.push('…');
+    trimmed
+}
+
+/// Merge syntheses that no longer fit the day budget into one digest paragraph.
+///
+/// Dropping them would leave the events they cover with no representation at
+/// all, so the paragraph is bounded instead: each synthesis keeps its time label
+/// and the head of its summary, and the whole paragraph is capped.
+fn render_synthesis_digest(syntheses: &[IntradaySynthesis], timezone: &chrono_tz::Tz) -> String {
+    const MAX_CHARS: usize = 1200;
+    if syntheses.is_empty() {
+        return String::new();
+    }
+    let mut digest = String::from("In digest: ");
+    for (idx, synthesis) in syntheses.iter().enumerate() {
+        if idx > 0 {
+            digest.push_str(" · ");
+        }
+        let time_label = synthesis
+            .time_range_start
+            .with_timezone(timezone)
+            .format("%H:%M")
+            .to_string();
+        let head: String = synthesis.summary.chars().take(80).collect();
+        digest.push_str(&format!("[{time_label}] {head}"));
+    }
+    digest.push('\n');
+    if digest.chars().count() > MAX_CHARS {
+        digest = digest.chars().take(MAX_CHARS - 1).collect();
+        digest.push('…');
+        digest.push('\n');
+    }
+    digest
 }
 
 /// Fetch the most recent BranchCompleted topic hint per channel.
@@ -1784,12 +1919,37 @@ mod tests {
         );
     }
 
+    /// Parse the coverage disclosure: `(N of N covered · A raw + B compressed +
+    /// C in digest)`. Returns the headline counts and each grain, so a test can
+    /// check that the grains account for every event rather than trusting the
+    /// headline alone.
+    #[allow(clippy::type_complexity)]
+    fn parse_coverage(rendered: &str) -> Option<(usize, usize, Vec<(usize, String)>)> {
+        let line = rendered.lines().find(|l| l.contains(" covered · "))?;
+        let inner = line.trim().trim_start_matches('(').trim_end_matches(')');
+        let (head, grains) = inner.split_once(" covered · ")?;
+        let (covered, total) = head.split_once(" of ")?;
+        let grains = grains
+            .split(" + ")
+            .filter_map(|grain| {
+                let (count, label) = grain.trim().split_once(' ')?;
+                Some((count.parse::<usize>().ok()?, label.to_string()))
+            })
+            .collect();
+        Some((
+            covered.trim().parse().ok()?,
+            total.trim().parse().ok()?,
+            grains,
+        ))
+    }
+
     #[tokio::test]
     async fn test_render_working_memory_tail_survives_synthesis_starvation() {
-        // Regression: intra-day synthesis paragraphs render before the raw
-        // unsynthesized tail. Before the fix they shared the whole day budget,
-        // so a large enough synthesis block consumed it entirely and the tail
-        // loop broke on its first line — rendering "(0 of N events shown)".
+        // Regression: intra-day synthesis paragraphs used to render before the
+        // raw unsynthesized tail and share the whole day budget, so a large
+        // enough synthesis block consumed it entirely and the tail loop broke on
+        // its first line — rendering "(0 of N events shown)". The tail now
+        // renders first, so the dense day must disclose full coverage instead.
         let store = setup_test_store().await;
         let today = store.today();
         let mut config = test_config();
@@ -1837,6 +1997,207 @@ mod tests {
         assert!(
             !rendered.contains("(0 of "),
             "must not disclose zero events shown while events exist\n{rendered}"
+        );
+        // Every event of the day is represented, and the disclosure says so.
+        let (covered, total, grains) = parse_coverage(&rendered).expect("coverage disclosed");
+        assert_eq!((covered, total), (5, 5), "coverage must be complete");
+        assert_eq!(
+            grains.iter().map(|(count, _)| count).sum::<usize>(),
+            total,
+            "the grains must account for every event\n{rendered}"
+        );
+        // The syntheses no longer fit, so they degrade to the digest rather than
+        // being dropped — the earlier events keep a representation.
+        assert!(
+            rendered.contains("Earlier today, synthesized:"),
+            "overflowing syntheses must still be represented\n{rendered}"
+        );
+        assert!(
+            rendered.contains("In digest: "),
+            "overflowing syntheses must merge into one digest\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_render_working_memory_covers_every_event_on_a_saturated_day() {
+        // A day where detail, one-liners and the digest are all needed at once.
+        // The point of the change is that this renders complete coverage: no
+        // event is excluded, so no disclosure can report a shortfall.
+        let store = setup_test_store().await;
+        let today = store.today();
+        let mut config = test_config();
+        config.context_token_budget = 300; // today budget = 180
+
+        for i in 0..3 {
+            let start = Utc::now() - chrono::Duration::hours(9 - i);
+            let end = Utc::now() - chrono::Duration::hours(8 - i);
+            store
+                .save_intraday_synthesis(
+                    &today,
+                    start,
+                    end,
+                    &"a whole batch of work summarised at length ".repeat(12),
+                    8,
+                )
+                .await
+                .unwrap();
+        }
+
+        for i in 0..40 {
+            let event = WorkingMemoryEvent {
+                id: Uuid::new_v4().to_string(),
+                event_type: WorkingMemoryEventType::WorkerCompleted,
+                timestamp: Utc::now(),
+                channel_id: Some("chan-1".to_string()),
+                user_id: None,
+                summary: format!("Worker {i} completed a long description of its work"),
+                detail: None,
+                importance: 0.6,
+                day: today.clone(),
+            };
+            insert_event(&store.pool, &event).await.unwrap();
+        }
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        let (covered, total, grains) = parse_coverage(&rendered).expect("coverage disclosed");
+        assert_eq!(total, 40, "all of the day's events are accounted for");
+        assert_eq!(covered, total, "nothing may be excluded\n{rendered}");
+        assert_eq!(
+            grains.iter().map(|(count, _)| count).sum::<usize>(),
+            total,
+            "the grains must add up to the day\n{rendered}"
+        );
+        let labels: Vec<&str> = grains.iter().map(|(_, label)| label.as_str()).collect();
+        assert!(
+            labels.iter().any(|l| l.contains("digest")),
+            "events past the budget must be counted, got {labels:?}\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("(0 of "),
+            "the starvation state must be unrepresentable\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_render_working_memory_renders_the_raw_tail_before_syntheses() {
+        // Order is the mechanism: the events are written before any synthesis
+        // claims budget, so a summary can never crowd out what it summarises.
+        let store = setup_test_store().await;
+        let today = store.today();
+        let mut config = test_config();
+        config.context_token_budget = 400; // today budget = 240
+
+        for i in 0..4 {
+            let start = Utc::now() - chrono::Duration::hours(8 - i);
+            let end = Utc::now() - chrono::Duration::hours(7 - i);
+            store
+                .save_intraday_synthesis(
+                    &today,
+                    start,
+                    end,
+                    &"a long synthesized batch of afternoon work ".repeat(12),
+                    6,
+                )
+                .await
+                .unwrap();
+        }
+
+        let event = WorkingMemoryEvent {
+            id: Uuid::new_v4().to_string(),
+            event_type: WorkingMemoryEventType::BranchCompleted,
+            timestamp: Utc::now(),
+            channel_id: Some("chan-1".to_string()),
+            user_id: None,
+            summary: "Analyzed auth module".to_string(),
+            detail: None,
+            importance: 0.7,
+            day: today.clone(),
+        };
+        insert_event(&store.pool, &event).await.unwrap();
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        let tail_at = rendered
+            .find("auth module")
+            .expect("the raw event must render");
+        let syntheses_at = rendered
+            .find("Earlier today, synthesized:")
+            .expect("the syntheses must render");
+        assert!(
+            tail_at < syntheses_at,
+            "raw events come first, got tail at {tail_at} and syntheses at {syntheses_at}\n{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("In digest:").count(),
+            1,
+            "syntheses that overflow merge into a single digest, never one each\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_render_working_memory_normal_day_stays_plain() {
+        // A day that fits must read exactly as before: every event as a raw line,
+        // the synthesis in full, and no coverage disclosure at all.
+        let store = setup_test_store().await;
+        let today = store.today();
+        let config = test_config(); // 1500-token budget
+
+        let start = Utc::now() - chrono::Duration::hours(3);
+        let end = Utc::now() - chrono::Duration::hours(2);
+        store
+            .save_intraday_synthesis(
+                &today,
+                start,
+                end,
+                "Morning: deployed v1.2.0 and fixed 3 bugs.",
+                8,
+            )
+            .await
+            .unwrap();
+
+        for i in 0..3 {
+            let event = WorkingMemoryEvent {
+                id: Uuid::new_v4().to_string(),
+                event_type: WorkingMemoryEventType::WorkerCompleted,
+                timestamp: Utc::now(),
+                channel_id: Some("chan-1".to_string()),
+                user_id: None,
+                summary: format!("Worker {i} completed successfully"),
+                detail: None,
+                importance: 0.6,
+                day: today.clone(),
+            };
+            insert_event(&store.pool, &event).await.unwrap();
+        }
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        for i in 0..3 {
+            assert!(
+                rendered.contains(&format!(
+                    "- Worker completed: Worker {i} completed successfully"
+                )),
+                "every event renders in full on a normal day\n{rendered}"
+            );
+        }
+        assert!(
+            rendered.contains("Morning: deployed v1.2.0 and fixed 3 bugs."),
+            "the synthesis renders in full when it fits\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("In digest:"),
+            "a day that fits must not be digested\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(" covered · "),
+            "a day that fits must not disclose coverage\n{rendered}"
         );
     }
 
