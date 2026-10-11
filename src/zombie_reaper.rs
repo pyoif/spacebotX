@@ -226,20 +226,17 @@ fn reap_orphans_once() -> usize {
         // 2. Per-candidate critical section: lock, decide, (maybe) reap, unlock.
         //    No `.await` here — this is a synchronous micro-critical-section.
         let mut should_reap = false;
-        match WAITED.lock() {
-            Ok(set) => {
-                // Exactness: fork happens under this same lock (see
-                // `spawn_managed`), so while we hold it a pid is either already
-                // in `WAITED` or not yet forked. A pid that is genuinely
-                // abandoned is absent from `WAITED` and no spawn is mid-flight.
-                if !spawning_in_progress() && !set.contains(&pid) {
-                    should_reap = true;
-                }
+        if let Ok(set) = WAITED.lock() {
+            // Exactness: fork happens under this same lock (see
+            // `spawn_managed`), so while we hold it a pid is either already
+            // in `WAITED` or not yet forked. A pid that is genuinely
+            // abandoned is absent from `WAITED` and no spawn is mid-flight.
+            if !spawning_in_progress() && !set.contains(&pid) {
+                should_reap = true;
             }
-            // Fail safe: if the registry is unreadable, take no action for this
-            // candidate rather than risk stealing a live waiter's exit status.
-            Err(_) => {}
         }
+        // Fail safe: if the registry is unreadable, take no action for this
+        // candidate rather than risk stealing a live waiter's exit status.
 
         if should_reap {
             // SAFETY: `waitpid` on one of our own children with `WNOHANG` never

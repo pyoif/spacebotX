@@ -218,7 +218,7 @@ impl SpacebotModel {
     /// bytes above it. The system prompt then stays byte-identical across turns
     /// and holds its full provider prefix cache.
     pub fn with_volatile_epilogue(mut self, epilogue: Option<String>) -> Self {
-        self.volatile_epilogue = epilogue.map(|text| text).filter(|text| !text.is_empty());
+        self.volatile_epilogue = epilogue.filter(|text| !text.is_empty());
         self
     }
 

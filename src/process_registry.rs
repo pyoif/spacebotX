@@ -93,10 +93,10 @@ impl WaitedGuard {
 
 impl Drop for WaitedGuard {
     fn drop(&mut self) {
-        if let Some(pid) = self.pid.take() {
-            if let Ok(mut set) = WAITED.lock() {
-                set.remove(&pid);
-            }
+        if let Some(pid) = self.pid.take()
+            && let Ok(mut set) = WAITED.lock()
+        {
+            set.remove(&pid);
         }
     }
 }
@@ -208,10 +208,7 @@ pub fn spawn_managed(cmd: &mut Command) -> io::Result<(Child, WaitedGuard)> {
     // register only means the reaper might decline to reap this one child
     // (conservative, never steals a live waiter's status). We must not fail the
     // spawn itself because of an unrelated poisoned mutex.
-    let mut waited = match WAITED.lock() {
-        Ok(guard) => Some(guard),
-        Err(_) => None,
-    };
+    let mut waited = WAITED.lock().ok();
 
     let child = match cmd.spawn() {
         Ok(child) => child,
@@ -436,7 +433,7 @@ mod tests {
             };
 
             // A file is "interesting" if any line constructs a process command.
-            let creates_process = contents.lines().any(|line| has_process_command_new(line));
+            let creates_process = contents.lines().any(has_process_command_new);
             if !creates_process {
                 continue;
             }
