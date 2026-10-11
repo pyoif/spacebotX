@@ -59,6 +59,29 @@ impl EmbeddingModel {
 
         Ok(result.into_iter().next().unwrap_or_default())
     }
+
+    /// Generate embeddings for many texts in one call (async, spawns blocking
+    /// task). fastembed accepts a batch natively, so the boot-time backfills
+    /// use this rather than a loop of [`Self::embed_one`] — one model-inference
+    /// call per batch instead of one per row.
+    ///
+    /// The returned vector is aligned with `texts` (fastembed preserves input
+    /// order) and every embedding is L2-normalized, matching the write path.
+    pub async fn embed_many(self: &Arc<Self>, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        #[cfg(feature = "metrics")]
+        let _timer = crate::telemetry::Metrics::global()
+            .memory_embedding_duration_seconds
+            .start_timer();
+
+        let model = self.model.clone();
+        tokio::task::spawn_blocking(move || {
+            model.embed(texts, None).map_err(|e| {
+                crate::Error::from(crate::error::LlmError::EmbeddingFailed(e.to_string()))
+            })
+        })
+        .await
+        .map_err(|e| crate::Error::Other(anyhow::anyhow!("embedding task failed: {}", e)))?
+    }
 }
 
 /// Async function to embed text using a shared model.

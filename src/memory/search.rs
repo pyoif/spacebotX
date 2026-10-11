@@ -115,9 +115,13 @@ impl MemorySearch {
     }
 
     /// One-time backfill: embed every level-0 checkpoint that lacks a row.
-    /// Level-0 rows only, per the chronicle spine contract. Returns how many
-    /// checkpoints were embedded.
+    /// Level-0 rows only, per the chronicle spine contract. Runs on the
+    /// background boot task (never awaited on the boot path); checkpoints are
+    /// embedded in bounded batches and progress is logged every batch.
+    /// Returns how many checkpoints were embedded.
     pub async fn backfill_chronicle_embeddings(&self, pool: &sqlx::SqlitePool) -> Result<usize> {
+        const BATCH: usize = 64;
+
         let Some(table) = &self.chronicle_table else {
             return Ok(0);
         };
@@ -125,15 +129,73 @@ impl MemorySearch {
         let checkpoints = store.list_level_zero_all().await?;
         let mut embedded = 0;
         let mut skipped = 0;
-        for checkpoint in checkpoints {
-            if table.has(&checkpoint.id).await? {
-                skipped += 1;
+        let total = checkpoints.len();
+        for chunk in checkpoints.chunks(BATCH) {
+            let mut batch: Vec<&crate::conversation::chronicle::ChronicleCheckpoint> =
+                Vec::with_capacity(chunk.len());
+            for checkpoint in chunk {
+                if table.has(&checkpoint.id).await? {
+                    skipped += 1;
+                    continue;
+                }
+                batch.push(checkpoint);
+            }
+            if batch.is_empty() {
                 continue;
             }
-            self.embed_chronicle_checkpoint(&checkpoint).await?;
-            embedded += 1;
+
+            let texts: Vec<String> = batch
+                .iter()
+                .map(|checkpoint| format!("{} — {}", checkpoint.title, checkpoint.summary))
+                .collect();
+            match self.embedding_model.embed_many(texts).await {
+                Ok(embeddings) => {
+                    for (checkpoint, embedding) in batch.into_iter().zip(embeddings) {
+                        if let Err(error) = table.store(&checkpoint.id, &embedding).await {
+                            tracing::warn!(
+                                checkpoint_id = %checkpoint.id,
+                                %error,
+                                "failed to store backfilled chronicle embedding"
+                            );
+                        } else {
+                            embedded += 1;
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        batch = batch.len(),
+                        %error,
+                        "batch chronicle embedding failed; falling back per-row"
+                    );
+                    for checkpoint in batch {
+                        let text = format!("{} — {}", checkpoint.title, checkpoint.summary);
+                        match self.embedding_model.embed_one(&text).await {
+                            Ok(embedding) => {
+                                if let Err(error) = table.store(&checkpoint.id, &embedding).await {
+                                    tracing::warn!(
+                                        checkpoint_id = %checkpoint.id,
+                                        %error,
+                                        "failed to store backfilled chronicle embedding"
+                                    );
+                                } else {
+                                    embedded += 1;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    checkpoint_id = %checkpoint.id,
+                                    %error,
+                                    "failed to embed chronicle checkpoint during backfill"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            tracing::info!(embedded, total, "chronicle embedding backfill progress");
         }
-        tracing::info!(embedded, skipped, "chronicle embedding backfill complete");
+        tracing::info!(embedded, skipped, total, "chronicle embedding backfill complete");
         Ok(embedded)
     }
 
@@ -155,45 +217,96 @@ impl MemorySearch {
     /// non-forgotten memories with no vector under the current model are
     /// embedded, so a second run does nothing.
     ///
-    /// Returns how many vectors were written. A memory whose embedding fails is
-    /// skipped with a warning rather than aborting the pass — text search is
+    /// Runs on the background boot task (see `main.rs`), never awaited on the
+    /// boot path. Texts are embedded in bounded batches (one fastembed call per
+    /// batch) and progress is logged every batch; a row whose embedding fails
+    /// is skipped with a warning rather than aborting the pass — text search is
     /// already live and every other memory should still warm up.
+    ///
+    /// Returns how many vectors were written.
     pub async fn backfill_memory_embeddings(&self, pool: &sqlx::SqlitePool) -> Result<usize> {
+        const BATCH: usize = 64;
+
         let pending =
             crate::memory::sqlite_index::pending_memory_embeddings(pool, crate::memory::sqlite_index::EMBEDDING_MODEL_ID)
                 .await?;
         if pending.is_empty() {
             return Ok(0);
         }
+        let total = pending.len();
 
         let store = crate::memory::MemoryStore::new(pool.clone());
         let mut embedded = 0usize;
-        for memory_id in pending {
-            let Some(memory) = store.load(&memory_id).await? else {
-                continue;
-            };
-            if memory.forgotten {
+        for chunk in pending.chunks(BATCH) {
+            // Load each memory's content for this batch.
+            let mut batch: Vec<(String, String)> = Vec::with_capacity(chunk.len());
+            for memory_id in chunk {
+                let Some(memory) = store.load(memory_id).await? else {
+                    continue;
+                };
+                if memory.forgotten {
+                    continue;
+                }
+                batch.push((memory.id.clone(), memory.content.clone()));
+            }
+            if batch.is_empty() {
                 continue;
             }
-            match self.embedding_model.embed_one(&memory.content).await {
-                Ok(embedding) => {
-                    if let Err(error) = self.embedding_table.store(&memory.id, &embedding).await {
-                        tracing::warn!(
-                            %memory_id,
-                            %error,
-                            "failed to store backfilled memory embedding"
-                        );
-                    } else {
-                        embedded += 1;
+
+            let texts: Vec<String> = batch.iter().map(|(_, content)| content.clone()).collect();
+            match self.embedding_model.embed_many(texts).await {
+                Ok(embeddings) => {
+                    for ((memory_id, _), embedding) in batch.into_iter().zip(embeddings) {
+                        if let Err(error) = self.embedding_table.store(&memory_id, &embedding).await {
+                            tracing::warn!(
+                                %memory_id,
+                                %error,
+                                "failed to store backfilled memory embedding"
+                            );
+                        } else {
+                            embedded += 1;
+                        }
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(%memory_id, %error, "failed to embed memory during backfill");
+                    // One batch failure must not abort the pass: fall back to
+                    // per-row embedding so an unembeddable text (or a transient
+                    // model hiccup) only costs that row.
+                    tracing::warn!(
+                        batch = batch.len(),
+                        %error,
+                        "batch memory embedding failed; falling back per-row"
+                    );
+                    for (memory_id, content) in batch {
+                        match self.embedding_model.embed_one(&content).await {
+                            Ok(embedding) => {
+                                if let Err(error) =
+                                    self.embedding_table.store(&memory_id, &embedding).await
+                                {
+                                    tracing::warn!(
+                                        %memory_id,
+                                        %error,
+                                        "failed to store backfilled memory embedding"
+                                    );
+                                } else {
+                                    embedded += 1;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(%memory_id, %error, "failed to embed memory during backfill");
+                            }
+                        }
+                    }
                 }
             }
+            tracing::info!(
+                embedded,
+                total,
+                "memory embedding backfill progress"
+            );
         }
 
-        tracing::info!(embedded, "memory embedding backfill complete");
+        tracing::info!(embedded, total, "memory embedding backfill complete");
         Ok(embedded)
     }
 
