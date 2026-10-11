@@ -707,7 +707,10 @@ pub async fn render_working_memory(
             if syntheses_rendered == 0 && !unsynthesized.is_empty() {
                 writeln!(output, "\n**Earlier today, synthesized:**").ok();
             }
-            tokens_used += estimate_tokens(&digest);
+            // Not added to `tokens_used`: the digest is the day's final render,
+            // so a store here is dead — nothing past this point reads the
+            // counter in a way that affects output — and dead stores are fatal
+            // under CI's `-Dwarnings`.
             write!(output, "{digest}").ok();
         }
     }
