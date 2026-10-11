@@ -879,11 +879,7 @@ mod context_ceiling_tests {
         };
 
         assert_eq!(
-            ceilings.min_resolved([
-                "je/deepseek-v4.1-flash",
-                "je/glm-5.3-flash",
-                "je/cortex"
-            ]),
+            ceilings.min_resolved(["je/deepseek-v4.1-flash", "je/glm-5.3-flash", "je/cortex"]),
             Some(200_000)
         );
     }
