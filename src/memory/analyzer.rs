@@ -1,15 +1,16 @@
 //! Text analysis for the SQLite FTS5 memory index.
 //!
 //! This is the Rust half of the `search_text` columns added by
-//! `migrations/20260816000001_memory_search_sqlite.sql`. Nothing in the live
-//! search path calls it yet — step A of the LanceDB → SQLite migration is
-//! additive and a runtime no-op.
+//! `migrations/20260816000001_memory_search_sqlite.sql`, and it is the live
+//! pipeline: the memory read path (`src/memory/search.rs` →
+//! `src/memory/sqlite_index.rs`) indexes through it and queries through it.
 //!
-//! The pipeline mirrors the one today's LanceDB full-text index uses, so that
-//! swapping the index backend does not silently change which documents match.
-//! Verified against `lance-index 2.0.0`'s `InvertedIndexParams::new("simple",
-//! Language::English)` (the value behind `Index::FTS(Default::default())`, which
-//! is what `lance.rs` passes) and the tantivy 0.24.2 filters it composes:
+//! It was built to mirror the full-text pipeline that the now-removed LanceDB
+//! index used, so that switching the index backend did not silently change
+//! which documents match. The reference pipeline (which no longer exists in
+//! this crate) was `lance-index 2.0.0`'s `InvertedIndexParams::new("simple",
+//! Language::English)` — the value behind `Index::FTS(Default::default())` —
+//! composing the tantivy 0.24.2 filters:
 //!
 //! `SimpleTokenizer → RemoveLong(40) → LowerCaser → Stemmer(English)`
 //! `→ StopWordFilter(English) → AsciiFoldingFilter`
@@ -38,8 +39,9 @@ use rust_stemmers::{Algorithm, Stemmer};
 
 /// Token length limit in bytes, mirroring tantivy's `RemoveLongFilter::limit(40)`.
 ///
-/// `lance-index` sets this to `Some(40)` by default. The filter's predicate is
-/// `token.text.len() < limit`, so a token of exactly 40 bytes is dropped.
+/// The reference `lance-index` pipeline sets this to `Some(40)` by default. The
+/// filter's predicate is `token.text.len() < limit`, so a token of exactly 40
+/// bytes is dropped.
 pub const MAX_TOKEN_BYTES: usize = 40;
 
 /// English stop words, matching tantivy's `StopWordFilter::new(Language::English)`
@@ -129,7 +131,7 @@ pub fn search_text(content: &str) -> String {
 /// error — an empty `MATCH` string is a syntax error).
 ///
 /// Every term is double-quoted and the terms are joined with `OR`, matching the
-/// `Operator::Or` that `lance_index::scalar::MatchQuery` uses today. Quoting is
+/// `Operator::Or` the reference `lance-index` query path used. Quoting is
 /// mandatory rather than cosmetic: FTS5's query parser reads `-` and `.` as
 /// operators (a bare `glm-5.3-flash` fails with `fts5: syntax error near "."`)
 /// and `word:term` as a column filter — an error while the name is not a column
@@ -285,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn analyze_tokens_stems_like_the_lance_pipeline() {
+    fn analyze_tokens_stems_like_the_reference_pipeline() {
         // Expected stems taken from rust-stemmers' own Snowball English fixture
         // (test_data/voc_en.txt + res_en.txt) — not guessed.
         assert_eq!(analyze_tokens("memories"), vec!["memori"]);

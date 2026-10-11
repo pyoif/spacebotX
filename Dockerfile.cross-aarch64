@@ -29,13 +29,6 @@ RUN dpkg --add-architecture arm64 \
     && apt-get install -y --no-install-recommends libssl-dev:arm64 libsqlite3-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
-# protoc (x86_64 host binary for prost/lancedb build-time codegen)
-RUN curl -fsSL -o /tmp/protoc.zip \
-        https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip \
-    && unzip /tmp/protoc.zip -d /usr/local \
-    && chmod +x /usr/local/bin/protoc \
-    && rm /tmp/protoc.zip
-
 # Cross-compilation environment
 ENV CROSS_TOOLCHAIN_PREFIX=aarch64-linux-gnu- \
     CROSS_SYSROOT=/usr/aarch64-linux-gnu \

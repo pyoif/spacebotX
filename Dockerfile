@@ -3,12 +3,9 @@
 FROM rust:bookworm AS builder
 
 # Install build dependencies:
-#   protobuf-compiler — LanceDB protobuf codegen
-#   cmake — onig_sys (regex), lz4-sys
+#   cmake — aws-lc-sys (the aws-lc crypto backend for rustls/QUIC)
 #   libssl-dev — openssl-sys (reqwest TLS)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    protobuf-compiler \
-    libprotobuf-dev \
     cmake \
     libssl-dev \
     pkg-config \

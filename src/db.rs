@@ -13,9 +13,6 @@ pub struct Db {
     /// SQLite pool for relational data.
     pub sqlite: SqlitePool,
 
-    /// LanceDB connection for vector storage.
-    pub lance: lancedb::Connection,
-
     /// Redb database for key-value config.
     pub redb: Arc<redb::Database>,
 }
@@ -47,20 +44,6 @@ impl Db {
             .await
             .with_context(|| "failed to run database migrations")?;
 
-        // LanceDB
-        let lance_path = data_dir.join("lancedb");
-        std::fs::create_dir_all(&lance_path).with_context(|| {
-            format!(
-                "failed to create LanceDB directory: {}",
-                lance_path.display()
-            )
-        })?;
-
-        let lance = lancedb::connect(lance_path.to_str().unwrap_or("./lancedb"))
-            .execute()
-            .await
-            .map_err(|e| DbError::LanceConnect(e.to_string()))?;
-
         // Redb
         let redb_path = data_dir.join("config.redb");
         let redb = redb::Database::create(&redb_path)
@@ -68,7 +51,6 @@ impl Db {
 
         Ok(Self {
             sqlite,
-            lance,
             redb: Arc::new(redb),
         })
     }
@@ -76,7 +58,7 @@ impl Db {
     /// Close all database connections gracefully.
     pub async fn close(self) {
         self.sqlite.close().await;
-        // LanceDB and redb close automatically when dropped
+        // Redb closes automatically when dropped
     }
 }
 

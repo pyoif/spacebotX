@@ -1833,9 +1833,6 @@ impl ResolvedAgentConfig {
     pub fn sqlite_path(&self) -> PathBuf {
         self.data_dir.join("spacebot.db")
     }
-    pub fn lancedb_path(&self) -> PathBuf {
-        self.data_dir.join("lancedb")
-    }
     pub fn redb_path(&self) -> PathBuf {
         self.data_dir.join("config.redb")
     }
