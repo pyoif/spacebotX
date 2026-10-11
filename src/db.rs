@@ -1,6 +1,6 @@
 //! Database connection management and migrations.
 
-use crate::error::{DbError, Result};
+use crate::error::Result;
 
 use anyhow::Context as _;
 use sqlx::SqlitePool;
