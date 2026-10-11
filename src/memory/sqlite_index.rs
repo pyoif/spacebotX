@@ -989,17 +989,19 @@ mod tests {
         let near = save(&store, "nearly parallel").await;
         let far = save(&store, "orthogonal").await;
 
-        // Unit vectors: [1,0,0] vs [0.99, 0.1, 0] is a much closer match than
-        // [0,1,0].
+        // Unit vectors (3-4-5 rotations): query [1,0,0] is closer to near
+        // [0.8,0.6,0] (cos 0.8) than to far [0.6,0.8,0] (cos 0.6), and near/far
+        // still share cosine 0.96 — above the find_similar threshold.
         let near_vec = {
             let mut v = vec![0.0_f32; 384];
-            v[0] = 1.0;
-            v[1] = 0.1;
+            v[0] = 0.8;
+            v[1] = 0.6;
             v
         };
         let far_vec = {
             let mut v = vec![0.0_f32; 384];
-            v[1] = 1.0;
+            v[0] = 0.6;
+            v[1] = 0.8;
             v
         };
         table.store(&near.id, &near_vec).await.expect("store near");

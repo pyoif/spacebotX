@@ -1948,6 +1948,15 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seq migration");
+        // The write path stores `search_text` (added by the memory-search
+        // migration); test DBs apply only a subset of migrations, so mirror the
+        // column here for the chronicle fixtures.
+        sqlx::raw_sql(
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_text TEXT NOT NULL DEFAULT '';",
+        )
+        .execute(&pool)
+        .await
+        .expect("memory search schema");
 
         for index in 0..6 {
             sqlx::query(

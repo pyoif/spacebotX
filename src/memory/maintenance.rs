@@ -655,7 +655,11 @@ mod tests {
             "durable rust maintenance note",
             MemoryType::Fact,
             0.9,
-            vec![1.0; 384],
+            // Unit vector: `vec![1.0; 384]` is not normalized (|v| = sqrt(384)),
+            // which would make the raw dot product ~384 instead of the cosine
+            // similarity 1.0. Normalize so the fixture matches the fastembed
+            // contract the merge path relies on.
+            vec![1.0_f32 / 384.0_f32.sqrt(); 384],
         )
         .await;
 
@@ -665,7 +669,7 @@ mod tests {
             "durable rust maintenance note update A",
             MemoryType::Fact,
             0.6,
-            vec![1.0; 384],
+            vec![1.0_f32 / 384.0_f32.sqrt(); 384],
         )
         .await;
         let duplicate_b = create_memory_with_embedding(
@@ -674,7 +678,7 @@ mod tests {
             "durable rust maintenance note update B",
             MemoryType::Fact,
             0.5,
-            vec![1.0; 384],
+            vec![1.0_f32 / 384.0_f32.sqrt(); 384],
         )
         .await;
 
