@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ---- Builder stage ----
 # Compiles the React frontend and the Rust binary with the frontend embedded.
 FROM rust:bookworm AS builder
@@ -26,7 +27,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY vendor/ vendor/
 RUN mkdir -p src/bin && echo "fn main() {}" > src/main.rs && touch src/lib.rs \
     && echo "fn main() {}" > src/bin/openapi_spec.rs \
-    && cargo build --release --features metrics \
+    && cargo build --release --locked --features metrics \
     && rm -rf src
 
 # 2. Install frontend dependencies.
@@ -61,7 +62,7 @@ COPY migrations/ migrations/
 COPY docs/ docs/
 COPY AGENTS.md README.md CHANGELOG.md ./
 COPY src/ src/
-RUN SPACEBOT_SKIP_FRONTEND_BUILD=1 cargo build --release --features metrics \
+RUN SPACEBOT_SKIP_FRONTEND_BUILD=1 cargo build --release --locked --features metrics \
     && mv /build/target/release/spacebot /usr/local/bin/spacebot \
     && cargo clean -p spacebot --release --target-dir /build/target
 
