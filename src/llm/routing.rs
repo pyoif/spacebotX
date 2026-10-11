@@ -144,6 +144,10 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         || lower.contains("error decoding response body")
         // SSE stream cut off before its terminal event
         || lower.contains("missing response.completed")
+        // A stream that opened and then went silent until the read timeout —
+        // no chunk and no close, so re-opening the request is the only progress
+        // available.
+        || lower.contains("stream stalled")
 }
 
 /// Whether a completion error indicates the provider rejected the model id

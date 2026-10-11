@@ -29,6 +29,63 @@ use tokio::sync::Mutex;
 
 const STREAM_REQUEST_TIMEOUT_SECS: u64 = 30 * 60;
 
+/// How long a provider stream may go without producing a chunk before the read
+/// is treated as stalled.
+///
+/// The whole-request timeout above is 30 minutes, which is far too long to wait
+/// on a single SSE chunk: an upstream that opens a stream and then goes silent
+/// would hold an agent turn open for the full half hour with nothing to show
+/// for it. 180s sits above the legitimate first-token latency of a 100k-token
+/// prompt, so a genuinely slow start is not mistaken for a stall.
+const STREAM_STALL_TIMEOUT_SECS: u64 = 180;
+
+/// Environment override for [`STREAM_STALL_TIMEOUT_SECS`]
+/// (`SPACEBOT_STREAM_STALL_TIMEOUT_SECS`, in seconds). Values that do not parse
+/// or are zero fall back to the default, so a typo cannot disable the guard.
+fn stream_stall_timeout() -> std::time::Duration {
+    let secs = std::env::var("SPACEBOT_STREAM_STALL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(STREAM_STALL_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Read the next chunk of a provider SSE stream, aborting the read when the
+/// upstream goes silent for `timeout`.
+///
+/// `None` means the stream ended; `Some(Err(_))` means a transport error or a
+/// stall. The distinction matters because a stall produces no chunk *and* no
+/// close, so awaiting it forever is what turns a wedged upstream into an agent
+/// turn that never returns. On a stall the generator returns and the response
+/// body is dropped, which closes the connection — the caller can therefore
+/// re-open the request instead of waiting on bytes that will never arrive.
+///
+/// The stall message deliberately contains "stalled" and "timeout" so
+/// [`crate::llm::routing::is_retriable_error`] classifies it as a transient
+/// transport failure and the provider retry policy applies to it.
+async fn next_chunk_with_stall_timeout<S, T, E>(
+    stream: &mut S,
+    timeout: std::time::Duration,
+    provider_label: &str,
+) -> Option<Result<T, String>>
+where
+    S: futures::Stream<Item = Result<T, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(timeout, stream.next()).await {
+        Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
+        Ok(Some(Err(error))) => Some(Err(format!(
+            "{provider_label} stream read failed: {error}"
+        ))),
+        Ok(None) => None,
+        Err(_) => Some(Err(format!(
+            "{provider_label} stream stalled: no data for {}s (read timeout)",
+            timeout.as_secs()
+        ))),
+    }
+}
+
 /// R4: return the request's tool definitions in a deterministic, name-sorted
 /// order.
 ///
@@ -1945,13 +2002,14 @@ impl SpacebotModel {
             let mut saw_data_event = false;
             let mut pending_tool_calls: std::collections::HashMap<String, OpenAiStreamingToolCall> = std::collections::HashMap::new();
 
-            while let Some(chunk_result) = stream.next().await {
+            let stall_timeout = stream_stall_timeout();
+            while let Some(chunk_result) =
+                next_chunk_with_stall_timeout(&mut stream, stall_timeout, &provider_label).await
+            {
                 let chunk = match chunk_result {
                     Ok(bytes) => bytes,
-                    Err(error) => {
-                        yield Err(CompletionError::ProviderError(format!(
-                            "{provider_label} stream read failed: {error}"
-                        )));
+                    Err(message) => {
+                        yield Err(CompletionError::ProviderError(message));
                         return;
                     }
                 };
@@ -2447,13 +2505,14 @@ impl SpacebotModel {
             let mut saw_data_event = false;
             let mut pending_tool_calls: BTreeMap<usize, OpenAiStreamingToolCall> = BTreeMap::new();
 
-            while let Some(chunk_result) = stream.next().await {
+            let stall_timeout = stream_stall_timeout();
+            while let Some(chunk_result) =
+                next_chunk_with_stall_timeout(&mut stream, stall_timeout, &provider_label).await
+            {
                 let chunk = match chunk_result {
                     Ok(bytes) => bytes,
-                    Err(error) => {
-                        yield Err(CompletionError::ProviderError(format!(
-                            "{provider_label} stream read failed: {error}"
-                        )));
+                    Err(message) => {
+                        yield Err(CompletionError::ProviderError(message));
                         return;
                     }
                 };
@@ -6017,5 +6076,87 @@ mod context_trim_tests {
             !crate::agent::compactor::opens_with_tool_result(&history[0]),
             "the retained history must not open on a tool result"
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_stall_tests {
+    use super::{STREAM_STALL_TIMEOUT_SECS, next_chunk_with_stall_timeout, stream_stall_timeout};
+
+    /// A stream that opens and then never yields is the exact shape that used to
+    /// hold an agent turn open until the 30-minute whole-request timeout: no
+    /// chunk, no close, no error. The read has to give up on its own and report
+    /// something the retry policy recognises as transient.
+    #[tokio::test]
+    async fn a_silent_stream_is_reported_as_a_retriable_stall() {
+        let mut stream = futures::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+
+        let message = next_chunk_with_stall_timeout(
+            &mut stream,
+            std::time::Duration::from_millis(50),
+            "test-provider",
+        )
+        .await
+        .expect("a stalled read reports an error, it does not end the stream")
+        .expect_err("a stalled read is an error");
+
+        assert!(message.contains("stalled"), "{message}");
+        assert!(
+            crate::llm::routing::is_retriable_error(&message),
+            "a stalled stream must stay retryable so the request is re-opened: {message}"
+        );
+    }
+
+    /// The guard must not change how ordinary chunks and ordinary read errors
+    /// reach the generator — only the never-ending read is new.
+    #[tokio::test]
+    async fn chunks_and_read_errors_pass_through_unchanged() {
+        let mut chunks =
+            futures::stream::iter(vec![Ok::<Vec<u8>, std::io::Error>(b"data: {}\n\n".to_vec())]);
+        let chunk = next_chunk_with_stall_timeout(
+            &mut chunks,
+            std::time::Duration::from_millis(50),
+            "test-provider",
+        )
+        .await
+        .expect("a chunk does not end the stream")
+        .expect("a chunk is not an error");
+        assert_eq!(chunk, b"data: {}\n\n");
+
+        let mut failing = futures::stream::iter(vec![Err::<Vec<u8>, std::io::Error>(
+            std::io::Error::other("connection reset by peer"),
+        )]);
+        let message = next_chunk_with_stall_timeout(
+            &mut failing,
+            std::time::Duration::from_millis(50),
+            "test-provider",
+        )
+        .await
+        .expect("a read error does not end the stream")
+        .expect_err("a read error is reported");
+        assert!(message.contains("stream read failed"), "{message}");
+    }
+
+    /// The window is reachable from the environment so a wedged upstream can be
+    /// diagnosed at runtime, but a value that cannot be read must fall back to
+    /// the default rather than disabling the guard entirely.
+    #[test]
+    fn the_stall_timeout_is_configurable_and_a_bad_value_never_disables_it() {
+        let key = "SPACEBOT_STREAM_STALL_TIMEOUT_SECS";
+        let default = std::time::Duration::from_secs(STREAM_STALL_TIMEOUT_SECS);
+
+        // SAFETY: this test is the only reader/writer of this variable, and the
+        // cases below are sequential within it.
+        unsafe { std::env::set_var(key, "45") };
+        assert_eq!(stream_stall_timeout(), std::time::Duration::from_secs(45));
+
+        unsafe { std::env::set_var(key, "0") };
+        assert_eq!(stream_stall_timeout(), default, "zero must not disable it");
+
+        unsafe { std::env::set_var(key, "not-a-number") };
+        assert_eq!(stream_stall_timeout(), default);
+
+        unsafe { std::env::remove_var(key) };
+        assert_eq!(stream_stall_timeout(), default);
     }
 }
