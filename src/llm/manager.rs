@@ -842,8 +842,7 @@ impl LlmManager {
 
 #[cfg(test)]
 mod context_ceiling_tests {
-    use super::{ContextCeilings, LlmManager};
-    use crate::config::LlmConfig;
+    use super::ContextCeilings;
 
     #[test]
     fn nothing_is_enforced_until_a_ceiling_is_known() {
