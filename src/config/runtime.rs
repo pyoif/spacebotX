@@ -85,6 +85,15 @@ pub struct RuntimeConfig {
     pub working_memory: ArcSwap<crate::config::types::WorkingMemoryConfig>,
     /// Participant context configuration for prompt-time participant awareness.
     pub participant_context: ArcSwap<crate::config::types::ParticipantContextConfig>,
+    /// The LLM manager whose ceilings context discovery writes into.
+    ///
+    /// Held so a config reload can re-apply the windows discovery has already
+    /// resolved. The ceilings live on the manager, not in TOML, so a rebuild
+    /// from the parsed config alone would republish the 128k placeholder over a
+    /// window learned from a provider's `/models` listing or from models.dev.
+    /// `None` until the agent is wired at startup, which leaves reloads on the
+    /// configured value — the pre-discovery behavior.
+    pub llm_manager: ArcSwap<Option<Arc<crate::llm::LlmManager>>>,
 }
 
 impl RuntimeConfig {
@@ -150,6 +159,7 @@ impl RuntimeConfig {
                 crate::config::types::WorkingMemoryConfig::default(),
             ),
             participant_context: ArcSwap::from_pointee(defaults.participant_context),
+            llm_manager: ArcSwap::from_pointee(None),
         }
     }
 
@@ -176,6 +186,16 @@ impl RuntimeConfig {
     /// Set the secrets store after initialization.
     pub fn set_secrets(&self, secrets: Arc<crate::secrets::store::SecretsStore>) {
         self.secrets.store(Arc::new(Some(secrets)));
+    }
+
+    /// Attach the LLM manager that holds the context ceilings discovery resolves.
+    ///
+    /// Set once the agent exists; from then on every config reload preserves the
+    /// windows already resolved instead of reverting them to the configured
+    /// placeholder. Without it a reload keeps the configured value, which is the
+    /// behavior before the manager could be reached from the reload path.
+    pub fn set_llm_manager(&self, llm_manager: Arc<crate::llm::LlmManager>) {
+        self.llm_manager.store(Arc::new(Some(llm_manager)));
     }
 
     /// Compute the current dispatch-readiness signal.
@@ -220,17 +240,24 @@ impl RuntimeConfig {
         llm_manager: &crate::llm::LlmManager,
     ) -> Option<usize> {
         let routing = self.routing.load();
-        let models = [
+        let resolved = llm_manager.min_resolved_ceiling(Self::agent_budget_models(&routing))?;
+        self.context_window.store(Arc::new(resolved));
+        Some(resolved)
+    }
+
+    /// The models that share one agent-wide budget.
+    ///
+    /// Startup propagation and the reload path must ask about the same set, or a
+    /// reload could adopt a window drawn from fewer surfaces than the one it
+    /// replaces and quietly resume overrunning the smallest of them.
+    fn agent_budget_models(routing: &RoutingConfig) -> [&str; 5] {
+        [
             routing.channel.as_str(),
             routing.branch.as_str(),
             routing.worker.as_str(),
             routing.compactor.as_str(),
             routing.cortex.as_str(),
-        ];
-
-        let resolved = llm_manager.min_resolved_ceiling(models)?;
-        self.context_window.store(Arc::new(resolved));
-        Some(resolved)
+        ]
     }
 
     /// Finds the matching agent by ID, re-resolves it against defaults, and
@@ -268,6 +295,35 @@ impl RuntimeConfig {
         let old_mcp = (**self.mcp.load()).clone();
         let new_mcp = resolved.mcp.clone();
 
+        // A window discovery resolved outlives a reload.
+        //
+        // `resolved.context_window` is the *configuration* value — the shipped
+        // 128k placeholder when nothing was pinned — so publishing it blind
+        // reverts everything that budgets off the agent window (compaction,
+        // branch turns, the status block) to the placeholder until the next
+        // restart, even though the manager still holds the real ceiling. A pin
+        // is a decision and still wins; with nothing pinned, re-apply what
+        // discovery already resolved. Nothing is fetched here: the ceilings are
+        // in memory on the manager, and an unresolved model simply does not
+        // vote, so a lookup that finds nothing leaves the configured value
+        // standing exactly as it does at startup.
+        let context_window_pinned =
+            agent.context_window.is_some() || config.defaults.context_window_explicit;
+        let reloaded_context_window = if context_window_pinned {
+            resolved.context_window
+        } else {
+            let discovered = {
+                let manager = self.llm_manager.load();
+                match manager.as_ref() {
+                    Some(manager) => {
+                        manager.min_resolved_ceiling(Self::agent_budget_models(&resolved.routing))
+                    }
+                    None => None,
+                }
+            };
+            discovered.unwrap_or(resolved.context_window)
+        };
+
         self.routing.store(Arc::new(resolved.routing));
         self.compaction.store(Arc::new(resolved.compaction));
         self.memory_persistence
@@ -279,7 +335,8 @@ impl RuntimeConfig {
         self.max_turns.store(Arc::new(resolved.max_turns));
         self.branch_max_turns
             .store(Arc::new(resolved.branch_max_turns));
-        self.context_window.store(Arc::new(resolved.context_window));
+        self.context_window
+            .store(Arc::new(reloaded_context_window));
         self.tool_use_enforcement
             .store(Arc::new(resolved.tool_use_enforcement.clone()));
         self.max_concurrent_branches
@@ -372,5 +429,110 @@ impl RuntimeConfig {
 impl std::fmt::Debug for RuntimeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeConfig").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Identity;
+    use crate::llm::LlmManager;
+    use crate::prompts::PromptEngine;
+    use crate::skills::SkillSet;
+
+    /// A live runtime config for the first agent of a default instance, the
+    /// parsed config the reload path is handed, and that agent's id.
+    fn test_runtime_config(
+        instance_dir: &std::path::Path,
+    ) -> (Arc<RuntimeConfig>, Config, String) {
+        let config = Config::load_from_env(instance_dir).expect("failed to build config");
+        let resolved = config
+            .resolve_agents()
+            .into_iter()
+            .next()
+            .expect("missing resolved agent config");
+        let prompts = PromptEngine::new("en").expect("failed to build prompt engine");
+        let runtime_config = Arc::new(RuntimeConfig::new(
+            instance_dir,
+            &resolved,
+            &config.defaults,
+            prompts,
+            Identity::default(),
+            SkillSet::default(),
+        ));
+        let agent_id = resolved.id.clone();
+        (runtime_config, config, agent_id)
+    }
+
+    /// The window this agent's models resolve to, for recording on the manager.
+    fn channel_model(config: &Config) -> String {
+        config
+            .resolve_agents()
+            .into_iter()
+            .next()
+            .expect("missing resolved agent config")
+            .routing
+            .channel
+    }
+
+    /// A reload must not republish the configured placeholder over a window
+    /// discovery already resolved.
+    ///
+    /// Everything that budgets — compaction, branch turns, the status block —
+    /// reads this one field, so a reload that reverted it to 128k would keep
+    /// losing the oldest turns of a conversation that fits the real window until
+    /// the next restart.
+    #[tokio::test]
+    async fn reload_preserves_a_discovered_context_window() {
+        let tempdir = tempfile::tempdir().expect("failed to create tempdir");
+        let (runtime_config, config, agent_id) = test_runtime_config(tempdir.path());
+
+        let llm_manager = Arc::new(
+            LlmManager::new(config.llm.clone())
+                .await
+                .expect("failed to build llm manager"),
+        );
+        llm_manager.note_resolved_context_window(&channel_model(&config), 262_144);
+        runtime_config.set_llm_manager(llm_manager.clone());
+
+        // Startup propagation adopts the resolved window...
+        assert_eq!(
+            runtime_config.apply_discovered_context_window(&llm_manager),
+            Some(262_144)
+        );
+
+        // ...and a reload triggered by an unrelated edit keeps it.
+        runtime_config.publish_config(&config, &agent_id);
+        assert_eq!(
+            **runtime_config.context_window.load(),
+            262_144,
+            "a reload must not revert the discovered window to the configured placeholder"
+        );
+    }
+
+    /// With nothing resolved there is nothing to preserve: the reload publishes
+    /// the configured value and the field is exactly as it was.
+    #[tokio::test]
+    async fn reload_keeps_the_configured_window_when_nothing_was_resolved() {
+        let tempdir = tempfile::tempdir().expect("failed to create tempdir");
+        let (runtime_config, config, agent_id) = test_runtime_config(tempdir.path());
+
+        let llm_manager = Arc::new(
+            LlmManager::new(config.llm.clone())
+                .await
+                .expect("failed to build llm manager"),
+        );
+        runtime_config.set_llm_manager(llm_manager.clone());
+
+        assert_eq!(
+            runtime_config.apply_discovered_context_window(&llm_manager),
+            None,
+            "nothing has been resolved for this agent's models"
+        );
+        let configured = **runtime_config.context_window.load();
+        assert_eq!(configured, config.defaults.context_window);
+
+        runtime_config.publish_config(&config, &agent_id);
+        assert_eq!(**runtime_config.context_window.load(), configured);
     }
 }

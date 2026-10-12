@@ -2418,6 +2418,13 @@ async fn initialize_agents(
             skills,
         ));
 
+        // Hand the manager to the runtime before anything can reload: the
+        // context ceilings discovery resolves live on the manager, not in TOML,
+        // so without this a later config hot-reload rebuilds from the parsed
+        // config alone and republishes the 128k placeholder over a window the
+        // provider already told us.
+        runtime_config.set_llm_manager(llm_manager.clone());
+
         // Learn this agent's context windows before its first turn.
         //
         // Request-time resolution only runs when a surface actually sends, so
