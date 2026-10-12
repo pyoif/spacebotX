@@ -11,6 +11,14 @@ use rig::completion::CompletionRequest;
 const CLAUDE_CODE_SYSTEM_PREAMBLE: &str =
     "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/// Used when no output cap was discovered for the model.
+///
+/// Anthropic requires `max_tokens`, so the field cannot simply be omitted the way
+/// it is on the OpenAI-shaped paths. A cap discovered from the endpoint or
+/// models.dev travels here in `request.max_tokens` already; this is only the
+/// conservative fallback for the unresolved case.
+pub const ANTHROPIC_FALLBACK_MAX_TOKENS: u64 = 16_000;
+
 /// Result of building an Anthropic request: the configured HTTP request builder,
 /// the auth path used, and the original tool names for response reverse-mapping.
 pub struct AnthropicRequest {
@@ -69,7 +77,7 @@ pub fn build_anthropic_request(
 
     let mut body = serde_json::json!({
         "model": model_name,
-        "max_tokens": request.max_tokens.unwrap_or(16_000),
+        "max_tokens": request.max_tokens.unwrap_or(ANTHROPIC_FALLBACK_MAX_TOKENS),
     });
 
     build_system_prompt(&mut body, request, is_oauth, &cache_control);

@@ -56,12 +56,39 @@ const CONTEXT_WINDOW_KEYS: [&str; 6] = [
     "supported_input_tokens",
 ];
 
-/// Keys inside a nested `limit` object, as models.dev publishes them.
-const LIMIT_KEYS: [&str; 2] = ["context", "output"];
+/// Key inside a nested `limit` object carrying the *input* window, as models.dev
+/// publishes it.
+///
+/// `output` is deliberately not a candidate here. It sat in this list once, which
+/// meant an entry publishing only its per-response cap was read as a context
+/// window the size of that cap — an 8k window for a model whose real one is 1M.
+/// The cap is read by [`output_limit_from_model_entry`], which is the only place
+/// it belongs.
+const LIMIT_CONTEXT_KEY: &str = "context";
+
+/// Key inside a nested `limit` object carrying the model's per-response output
+/// cap, as models.dev publishes it.
+const LIMIT_OUTPUT_KEY: &str = "output";
+
+/// Smallest value accepted as a per-response output cap.
+///
+/// Unlike a context window, a small cap is a real setting — `max_tokens` values
+/// in the hundreds are legal — so the floor is 1 rather than the context
+/// minimum.
+const OUTPUT_TOKENS_MIN: usize = 1;
+
+/// Largest value accepted as a per-response output cap. Guards against a byte
+/// count, or a context window, sitting in the field by mistake.
+const OUTPUT_TOKENS_MAX: usize = 1_000_000;
 
 /// Whether a number is plausible as a context window.
 pub fn is_plausible_context_window(tokens: usize) -> bool {
     (CONTEXT_WINDOW_MIN..=CONTEXT_WINDOW_MAX).contains(&tokens)
+}
+
+/// Whether a number is plausible as a per-response output cap.
+pub fn is_plausible_output_limit(tokens: usize) -> bool {
+    (OUTPUT_TOKENS_MIN..=OUTPUT_TOKENS_MAX).contains(&tokens)
 }
 
 /// Read a number out of a JSON value that may be numeric or a numeric string.
@@ -89,17 +116,27 @@ pub fn context_window_from_model_entry(entry: &Value) -> Option<usize> {
         }
     }
 
-    if let Some(limit) = object.get("limit").and_then(Value::as_object) {
-        for key in LIMIT_KEYS {
-            if let Some(tokens) = limit.get(key).and_then(as_tokens)
-                && is_plausible_context_window(tokens)
-            {
-                return Some(tokens);
-            }
-        }
+    if let Some(limit) = object.get("limit").and_then(Value::as_object)
+        && let Some(tokens) = limit.get(LIMIT_CONTEXT_KEY).and_then(as_tokens)
+        && is_plausible_context_window(tokens)
+    {
+        return Some(tokens);
     }
 
     None
+}
+
+/// Read a per-response output cap out of one model entry.
+///
+/// Only the nested `limit.output` shape, which is what models.dev publishes next
+/// to `limit.context`. A flat entry that happens to carry a context window does
+/// not yield an invented cap: an unknown cap leaves the provider on its own
+/// default, which is what this deployment did before the field was read at all.
+pub fn output_limit_from_model_entry(entry: &Value) -> Option<usize> {
+    let object = entry.as_object()?;
+    let limit = object.get("limit").and_then(Value::as_object)?;
+    let tokens = limit.get(LIMIT_OUTPUT_KEY).and_then(as_tokens)?;
+    is_plausible_output_limit(tokens).then_some(tokens)
 }
 
 /// Which rung of the id-mapping ladder produced a match.
@@ -274,50 +311,74 @@ pub fn map_model_id(candidate: &str, known: &[String]) -> Option<(String, IdMatc
     None
 }
 
-/// Find the context window for `model_id` in a decoded `/models` response.
+/// Find a per-model value in a decoded `/models` response.
 ///
 /// Accepts either `{ "data": [ { "id": ..., ... } ] }` (OpenAI shape) or a bare
 /// array, and falls back to the id-mapping ladder when the exact id is absent
-/// because the endpoint advertises a namespaced variant.
-pub fn context_window_from_models_response(body: &Value, model_id: &str) -> Option<usize> {
+/// because the endpoint advertises a namespaced variant. `pick` reads the field
+/// of interest out of one entry.
+///
+/// Only entries that actually carry the field take part in the ladder, so a
+/// listing that describes a model without a cap cannot make that model's id
+/// match an unrelated entry that has one.
+fn lookup_endpoint_entry<T: Copy>(
+    body: &Value,
+    model_id: &str,
+    pick: impl Fn(&Value) -> Option<T>,
+) -> Option<T> {
     let entries = body
         .get("data")
         .and_then(Value::as_array)
         .or_else(|| body.as_array())?;
 
     let mut ids: Vec<String> = Vec::new();
-    let mut windows: Vec<(String, usize)> = Vec::new();
+    let mut values: Vec<(String, T)> = Vec::new();
     for entry in entries {
         let Some(id) = entry.get("id").and_then(Value::as_str) else {
             continue;
         };
         ids.push(id.to_string());
-        if let Some(window) = context_window_from_model_entry(entry) {
-            windows.push((id.to_string(), window));
+        if let Some(value) = pick(entry) {
+            values.push((id.to_string(), value));
         }
     }
 
-    if let Some((_, window)) = windows
+    if let Some((_, value)) = values
         .iter()
         .find(|(id, _)| id.eq_ignore_ascii_case(model_id))
     {
-        return Some(*window);
+        return Some(*value);
     }
 
     let (matched, _) = map_model_id(model_id, &ids)?;
-    windows
+    values
         .iter()
         .find(|(id, _)| id == &matched)
-        .map(|(_, window)| *window)
+        .map(|(_, value)| *value)
 }
 
-/// Every `(model id, context window)` pair in a decoded models.dev payload.
+/// Find the context window for `model_id` in a decoded `/models` response.
+pub fn context_window_from_models_response(body: &Value, model_id: &str) -> Option<usize> {
+    lookup_endpoint_entry(body, model_id, context_window_from_model_entry)
+}
+
+/// Find the per-response output cap for `model_id` in a decoded `/models`
+/// response. `None` when the listing does not publish one.
+pub fn output_limit_from_models_response(body: &Value, model_id: &str) -> Option<usize> {
+    lookup_endpoint_entry(body, model_id, output_limit_from_model_entry)
+}
+
+/// Every `(model id, value)` pair a decoded models.dev payload carries for one
+/// field, read by `pick`.
 ///
 /// The source used here, `models.json`, is a flat `{ "<namespaced id>": { … } }`
 /// object, so the key *is* the id (`zhipuai/glm-5.3-flash`). The provider-nested
 /// `api.json` shape — `{ "<provider>": { "models": { … } } }` — is still accepted
 /// for tolerance, but nothing writes it any more.
-pub fn collect_models_dev_entries(data: &Value) -> Vec<(String, usize)> {
+fn collect_models_dev_values<T: Copy>(
+    data: &Value,
+    pick: impl Fn(&Value) -> Option<T>,
+) -> Vec<(String, T)> {
     let mut found = Vec::new();
     let Some(root) = data.as_object() else {
         return found;
@@ -326,43 +387,161 @@ pub fn collect_models_dev_entries(data: &Value) -> Vec<(String, usize)> {
     for (key, value) in root {
         if let Some(models) = value.get("models").and_then(Value::as_object) {
             for (id, entry) in models {
-                if let Some(window) = context_window_from_model_entry(entry) {
-                    found.push((id.clone(), window));
+                if let Some(limit) = pick(entry) {
+                    found.push((id.clone(), limit));
                 }
             }
-        } else if let Some(window) = context_window_from_model_entry(value) {
-            found.push((key.clone(), window));
+        } else if let Some(limit) = pick(value) {
+            found.push((key.clone(), limit));
         }
     }
 
     found
 }
 
-/// Resolve `candidate` against a decoded models.dev payload.
-pub fn resolve_from_models_dev(candidate: &str, data: &Value) -> Option<(String, IdMatch, usize)> {
-    let entries = collect_models_dev_entries(data);
+/// Every `(model id, context window)` pair in a decoded models.dev payload.
+pub fn collect_models_dev_entries(data: &Value) -> Vec<(String, usize)> {
+    collect_models_dev_values(data, context_window_from_model_entry)
+}
+
+/// Resolve one field of `candidate` against a decoded models.dev payload.
+///
+/// Both fields share this ladder on purpose: the id mapping is what makes a
+/// provider-flavoured id find its catalogue entry, and reading the output cap by
+/// a different route would let one field resolve against a different entry than
+/// the other.
+fn resolve_field_from_models_dev<T: Copy>(
+    candidate: &str,
+    data: &Value,
+    pick: impl Fn(&Value) -> Option<T> + Copy,
+) -> Option<(String, IdMatch, T)> {
+    let entries = collect_models_dev_values(data, pick);
     if entries.is_empty() {
         return None;
     }
     let ids: Vec<String> = entries.iter().map(|(id, _)| id.clone()).collect();
     let (matched, step) = map_model_id(candidate, &ids)?;
-    let window = entries
+    let value = entries
         .iter()
         .find(|(id, _)| id == &matched)
-        .map(|(_, window)| *window)?;
-    Some((matched, step, window))
+        .map(|(_, value)| *value)?;
+    Some((matched, step, value))
 }
 
-/// Ask an endpoint's `/models` listing what it knows about `model_id`.
+/// Resolve `candidate` against a decoded models.dev payload.
+pub fn resolve_from_models_dev(candidate: &str, data: &Value) -> Option<(String, IdMatch, usize)> {
+    resolve_field_from_models_dev(candidate, data, context_window_from_model_entry)
+}
+
+/// Resolve a model's per-response output cap against a decoded models.dev
+/// payload. `None` when the catalogue publishes no cap for it.
+pub fn resolve_output_limit_from_models_dev(
+    candidate: &str,
+    data: &Value,
+) -> Option<(String, IdMatch, usize)> {
+    resolve_field_from_models_dev(candidate, data, output_limit_from_model_entry)
+}
+
+/// Which metadata source discovery consults first.
 ///
-/// Returns `None` on any failure — transport, status, parse or absence — since
-/// this is an advisory lookup.
-pub async fn fetch_context_window_from_endpoint(
+/// Only the order is configurable; both ladders still fall through to the other
+/// source for a field the first one did not publish, so a deployment whose own
+/// listing is thinner than the catalogue loses nothing by leaving this alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoverySource {
+    /// The configured endpoint's own `/models` listing, then models.dev.
+    #[default]
+    Endpoint,
+    /// models.dev first, then the endpoint's listing — for a deployment whose
+    /// listing under-reports what the backend will accept.
+    ModelsDev,
+}
+
+impl DiscoverySource {
+    /// The rungs to try, in order.
+    pub fn rungs(self) -> [DiscoverySource; 2] {
+        match self {
+            DiscoverySource::Endpoint => [DiscoverySource::Endpoint, DiscoverySource::ModelsDev],
+            DiscoverySource::ModelsDev => [DiscoverySource::ModelsDev, DiscoverySource::Endpoint],
+        }
+    }
+}
+
+/// Label for a value that came from the endpoint's own listing.
+pub const ENDPOINT_SOURCE: &str = "endpoint /models";
+
+/// Label for a value that came from the models.dev catalogue.
+pub const MODELS_DEV_SOURCE: &str = "models.dev";
+
+/// What one model will accept: its input window and its per-response output cap.
+///
+/// The two travel together because they come from the same entry, and because a
+/// deployment that published one but not the other is exactly the case the
+/// per-field fallthrough exists for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelLimits {
+    /// Input window, with the source that supplied it.
+    pub context: Option<(usize, &'static str)>,
+    /// Per-response output cap, with the source that supplied it.
+    pub output: Option<(usize, &'static str)>,
+}
+
+impl ModelLimits {
+    /// Whether both fields are known, so no further source can add anything.
+    pub fn is_complete(&self) -> bool {
+        self.context.is_some() && self.output.is_some()
+    }
+
+    /// Fold one rung's answer in. The first source to answer a field wins it.
+    ///
+    /// Per field rather than per source, deliberately: an endpoint that publishes
+    /// windows but no output cap has answered half the question, and the
+    /// catalogue should fill the other half instead of the pair being taken
+    /// wholesale from whichever source spoke first.
+    fn fold(
+        &mut self,
+        rung: DiscoverySource,
+        endpoint_body: Option<&Value>,
+        models_dev_data: Option<&Value>,
+        model_id: &str,
+    ) {
+        match rung {
+            DiscoverySource::Endpoint => {
+                let Some(body) = endpoint_body else { return };
+                if self.context.is_none() {
+                    self.context = context_window_from_models_response(body, model_id)
+                        .map(|window| (window, ENDPOINT_SOURCE));
+                }
+                if self.output.is_none() {
+                    self.output = output_limit_from_models_response(body, model_id)
+                        .map(|output| (output, ENDPOINT_SOURCE));
+                }
+            }
+            DiscoverySource::ModelsDev => {
+                let Some(data) = models_dev_data else { return };
+                if self.context.is_none() {
+                    self.context = resolve_from_models_dev(model_id, data)
+                        .map(|(_, _, window)| (window, MODELS_DEV_SOURCE));
+                }
+                if self.output.is_none() {
+                    self.output = resolve_output_limit_from_models_dev(model_id, data)
+                        .map(|(_, _, output)| (output, MODELS_DEV_SOURCE));
+                }
+            }
+        }
+    }
+}
+
+/// Fetch and decode an endpoint's `/models` listing.
+///
+/// Returns `None` on any failure — transport, status or parse — since this is an
+/// advisory lookup that must never hold a completion request open.
+async fn fetch_models_listing(
     client: &reqwest::Client,
     models_url: &str,
     api_key: Option<&str>,
-    model_id: &str,
-) -> Option<usize> {
+) -> Option<Value> {
     let mut request = client
         .get(models_url)
         .header("accept", "application/json")
@@ -378,13 +557,55 @@ pub async fn fetch_context_window_from_endpoint(
         tracing::debug!(
             status = response.status().as_u16(),
             %models_url,
-            "models listing did not answer, skipping context-window lookup"
+            "models listing did not answer, skipping discovery"
         );
         return None;
     }
 
-    let body: Value = response.json().await.ok()?;
-    context_window_from_models_response(&body, model_id)
+    response.json::<Value>().await.ok()
+}
+
+/// Resolve a model's window and output cap, consulting `rungs` in order.
+///
+/// Each source is fetched at most once, and only when a field is still unknown,
+/// so an endpoint that answers both never triggers the models.dev fetch — the
+/// common case on a warm start. Every failure is soft: a source that cannot
+/// answer leaves the fields it did not supply untouched, and the caller keeps
+/// whatever it already had.
+pub async fn resolve_model_limits(
+    client: &reqwest::Client,
+    models_url: &str,
+    api_key: Option<&str>,
+    models_dev_cache_path: &Path,
+    model_id: &str,
+    rungs: &[DiscoverySource],
+) -> ModelLimits {
+    let mut limits = ModelLimits::default();
+    let mut endpoint_body: Option<Value> = None;
+    let mut models_dev_data: Option<Value> = None;
+
+    for rung in rungs {
+        if limits.is_complete() {
+            break;
+        }
+        let (endpoint, models_dev) = match rung {
+            DiscoverySource::Endpoint => {
+                if endpoint_body.is_none() {
+                    endpoint_body = fetch_models_listing(client, models_url, api_key).await;
+                }
+                (endpoint_body.as_ref(), None)
+            }
+            DiscoverySource::ModelsDev => {
+                if models_dev_data.is_none() {
+                    models_dev_data = load_models_dev(client, models_dev_cache_path).await;
+                }
+                (None, models_dev_data.as_ref())
+            }
+        };
+        limits.fold(*rung, endpoint, models_dev, model_id);
+    }
+
+    limits
 }
 
 /// Load the models.dev payload, preferring a fresh on-disk cache.
@@ -448,36 +669,6 @@ async fn fetch_models_dev(client: &reqwest::Client) -> Option<Value> {
         return None;
     }
     response.json::<Value>().await.ok()
-}
-
-/// Resolve a model's context window, endpoint first, models.dev second.
-///
-/// Returns the window and a label naming the source that supplied it, or `None`
-/// when neither knows — in which case the caller keeps its configured default.
-pub async fn resolve_context_window(
-    client: &reqwest::Client,
-    models_url: &str,
-    api_key: Option<&str>,
-    models_dev_cache_path: &Path,
-    model_id: &str,
-) -> Option<(usize, &'static str)> {
-    if let Some(window) =
-        fetch_context_window_from_endpoint(client, models_url, api_key, model_id).await
-    {
-        tracing::debug!(model = %model_id, window, "context window from endpoint /models");
-        return Some((window, "endpoint /models"));
-    }
-
-    let data = load_models_dev(client, models_dev_cache_path).await?;
-    let (matched, step, window) = resolve_from_models_dev(model_id, &data)?;
-    tracing::debug!(
-        model = %model_id,
-        matched = %matched,
-        step = step.as_str(),
-        window,
-        "context window from models.dev"
-    );
-    Some((window, "models.dev"))
 }
 
 #[cfg(test)]
@@ -841,5 +1032,150 @@ mod tests {
             context_window_from_models_response(&namespaced, "glm-5.3"),
             Some(99_000)
         );
+    }
+
+    #[test]
+    fn limit_output_is_never_read_as_a_context_window() {
+        // Regression: `output` sat in the `limit` fallback list next to
+        // `context`, so an entry publishing only its output cap answered with
+        // that cap as the model's *window* — an 8k context for a 1M-token model.
+        assert_eq!(
+            context_window_from_model_entry(&json!({ "limit": { "output": 8_192 } })),
+            None
+        );
+        // The window next to it is still read as the window.
+        assert_eq!(
+            context_window_from_model_entry(
+                &json!({ "limit": { "context": 200_000, "output": 8_192 } })
+            ),
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn output_limit_is_read_from_the_nested_limit_object() {
+        // The real catalogue shape: both fields side by side.
+        assert_eq!(
+            output_limit_from_model_entry(
+                &json!({ "limit": { "context": 1_000_000, "output": 131_072 } })
+            ),
+            Some(131_072)
+        );
+        // Numeric strings are accepted here too.
+        assert_eq!(
+            output_limit_from_model_entry(&json!({ "limit": { "output": "384000" } })),
+            Some(384_000)
+        );
+        // A flat entry publishes no cap, and none is invented from its window.
+        assert_eq!(
+            output_limit_from_model_entry(&json!({ "context_window": 200_000 })),
+            None
+        );
+        // Implausible: a byte count.
+        assert_eq!(
+            output_limit_from_model_entry(&json!({ "limit": { "output": 40_000_000 } })),
+            None
+        );
+        assert_eq!(
+            output_limit_from_model_entry(&json!({ "id": "glm-5.3" })),
+            None
+        );
+    }
+
+    #[test]
+    fn endpoint_models_response_carries_the_output_cap() {
+        let body = json!({
+            "data": [
+                { "id": "other", "limit": { "output": 4_096 } },
+                { "id": "glm-5.3", "limit": { "context": 262_144, "output": 131_072 } }
+            ]
+        });
+        assert_eq!(
+            context_window_from_models_response(&body, "glm-5.3"),
+            Some(262_144)
+        );
+        assert_eq!(
+            output_limit_from_models_response(&body, "glm-5.3"),
+            Some(131_072)
+        );
+
+        // The ladder reaches a namespaced variant for the cap as well.
+        let namespaced =
+            json!({ "data": [{ "id": "zai/glm-5.3:cloudflare", "limit": { "output": 65_536 } }] });
+        assert_eq!(
+            output_limit_from_models_response(&namespaced, "glm-5.3"),
+            Some(65_536)
+        );
+
+        // A listing that publishes only windows yields no cap.
+        let windows_only = json!({ "data": [{ "id": "glm-5.3", "context_length": 262_144 }] });
+        assert_eq!(
+            output_limit_from_models_response(&windows_only, "glm-5.3"),
+            None
+        );
+    }
+
+    #[test]
+    fn models_dev_publishes_an_output_cap_next_to_the_window() {
+        // Values copied from models.dev/models.json.
+        let data = json!({
+            "deepseek/deepseek-v4.1-flash": { "limit": { "context": 1_000_000, "output": 384_000 } }
+        });
+        assert_eq!(
+            resolve_output_limit_from_models_dev("deepseek-v4.1-flash", &data),
+            Some((
+                "deepseek/deepseek-v4.1-flash".to_string(),
+                IdMatch::VendorPrefix,
+                384_000
+            ))
+        );
+        // The window resolution beside it is unchanged.
+        assert_eq!(
+            resolve_from_models_dev("deepseek-v4.1-flash", &data),
+            Some((
+                "deepseek/deepseek-v4.1-flash".to_string(),
+                IdMatch::VendorPrefix,
+                1_000_000
+            ))
+        );
+        // A model the catalogue knows only as a window has no cap.
+        let window_only = json!({ "vendor/m": { "limit": { "context": 200_000 } } });
+        assert_eq!(
+            resolve_output_limit_from_models_dev("m", &window_only),
+            None
+        );
+    }
+
+    #[test]
+    fn the_ladder_takes_the_first_source_that_answers_each_field() {
+        let endpoint = json!({ "data": [{ "id": "m", "context_window": 262_144 }] });
+        let models_dev = json!({
+            "vendor/m": { "limit": { "context": 1_000_000, "output": 384_000 } }
+        });
+
+        // Endpoint first: its window wins, and the catalogue fills the cap the
+        // endpoint did not publish.
+        let mut limits = ModelLimits::default();
+        for rung in DiscoverySource::Endpoint.rungs() {
+            limits.fold(rung, Some(&endpoint), Some(&models_dev), "m");
+        }
+        assert_eq!(limits.context, Some((262_144, ENDPOINT_SOURCE)));
+        assert_eq!(limits.output, Some((384_000, MODELS_DEV_SOURCE)));
+
+        // models.dev first: it answers both, so the endpoint's window is not used.
+        let mut limits = ModelLimits::default();
+        for rung in DiscoverySource::ModelsDev.rungs() {
+            limits.fold(rung, Some(&endpoint), Some(&models_dev), "m");
+        }
+        assert_eq!(limits.context, Some((1_000_000, MODELS_DEV_SOURCE)));
+        assert_eq!(limits.output, Some((384_000, MODELS_DEV_SOURCE)));
+
+        // A source that knows nothing leaves the field unknown rather than
+        // falling back to a guessed number.
+        let mut limits = ModelLimits::default();
+        for rung in DiscoverySource::Endpoint.rungs() {
+            limits.fold(rung, Some(&json!({ "data": [] })), None, "m");
+        }
+        assert_eq!(limits, ModelLimits::default());
     }
 }

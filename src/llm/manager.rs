@@ -75,6 +75,13 @@ pub struct ContextCeilings {
     /// Windows resolved from the provider's `/models` listing or from models.dev.
     /// Weaker evidence than a refusal, but far better than guessing.
     pub discovered: HashMap<String, usize>,
+    /// Per-response output caps resolved from the same two sources.
+    ///
+    /// Held apart from `discovered` because they answer different questions: a
+    /// window bounds the request, a cap is what the request asks the model to
+    /// emit. Only discovery ever fills this — there is no configured or learned
+    /// form, since a provider refusal measures the window, not the cap.
+    pub discovered_output: HashMap<String, usize>,
 }
 
 impl ContextCeilings {
@@ -158,7 +165,38 @@ impl ContextCeilings {
             default: self.default,
             learned: self.learned.clone(),
             discovered,
+            discovered_output: self.discovered_output.clone(),
         })
+    }
+
+    /// Fold a per-response output cap resolved from the same two sources.
+    ///
+    /// Additive and idempotent exactly like [`Self::with_discovered`], but with
+    /// its own plausibility rule: a 512-token *window* is a typo, while a
+    /// 512-token *cap* is a legitimate setting, so the two fields cannot share
+    /// the context minimum.
+    pub fn with_discovered_output(&self, full_model_name: &str, tokens: usize) -> Option<Self> {
+        if !crate::llm::context_window::is_plausible_output_limit(tokens) {
+            return None;
+        }
+        if self.discovered_output.get(full_model_name).copied() == Some(tokens) {
+            return None;
+        }
+
+        let mut discovered_output = self.discovered_output.clone();
+        discovered_output.insert(full_model_name.to_string(), tokens);
+        Some(Self {
+            configured: self.configured,
+            default: self.default,
+            learned: self.learned.clone(),
+            discovered: self.discovered.clone(),
+            discovered_output,
+        })
+    }
+
+    /// The per-response output cap known for this model, if any.
+    pub fn output_limit_for(&self, full_model_name: &str) -> Option<usize> {
+        self.discovered_output.get(full_model_name).copied()
     }
 
     /// Fold a rejection of `estimated_tokens` into the ceilings.
@@ -188,6 +226,7 @@ impl ContextCeilings {
             default: self.default,
             learned,
             discovered: self.discovered.clone(),
+            discovered_output: self.discovered_output.clone(),
         })
     }
 }
@@ -303,6 +342,7 @@ impl LlmManager {
             default: Some(tokens),
             learned: current.learned.clone(),
             discovered: current.discovered.clone(),
+            discovered_output: current.discovered_output.clone(),
         });
     }
 
@@ -316,6 +356,7 @@ impl LlmManager {
             default: current.default,
             learned: current.learned.clone(),
             discovered: current.discovered.clone(),
+            discovered_output: current.discovered_output.clone(),
         });
     }
 
@@ -347,6 +388,40 @@ impl LlmManager {
                 .with_discovered(full_model_name, tokens)
                 .unwrap_or_else(|| (**current).clone())
         });
+    }
+
+    /// Record a per-response output cap resolved from the same two sources.
+    ///
+    /// Read-modify-write under `rcu` for the same reason the window is: a
+    /// concurrent resolution or refusal must not be dropped by this write.
+    pub fn note_resolved_output_limit(&self, full_model_name: &str, tokens: usize) {
+        self.context_ceilings.rcu(|current| {
+            current
+                .with_discovered_output(full_model_name, tokens)
+                .unwrap_or_else(|| (**current).clone())
+        });
+    }
+
+    /// The per-response output cap this model was discovered to have, if any.
+    ///
+    /// The request path reads this to populate `max_tokens`; `None` leaves the
+    /// field absent so the provider keeps its own default.
+    pub fn output_limit(&self, full_model_name: &str) -> Option<usize> {
+        self.context_ceilings
+            .load()
+            .output_limit_for(full_model_name)
+    }
+
+    /// Whether this model's output cap has already been resolved.
+    ///
+    /// Paired with [`Self::context_window_discovered`] so request-time
+    /// resolution stops only once *both* fields are known.
+    pub fn output_limit_discovered(&self, full_model_name: &str) -> Option<usize> {
+        self.context_ceilings
+            .load()
+            .discovered_output
+            .get(full_model_name)
+            .copied()
     }
 
     /// The smallest window resolved for any of `models`.
@@ -410,32 +485,45 @@ impl LlmManager {
 
                     let models_url =
                         crate::llm::routing::build_endpoint(&provider.base_url, "/models");
-                    let resolved = crate::llm::context_window::resolve_context_window(
+                    let limits = crate::llm::context_window::resolve_model_limits(
                         &self.http_client,
                         &models_url,
                         Some(provider.api_key.as_str()),
                         &cache_path,
                         &model_id,
+                        &crate::llm::context_window::DiscoverySource::default().rungs(),
                     )
                     .await;
 
-                    match resolved {
-                        Some((window, source)) => {
-                            tracing::info!(
-                                model = %model,
-                                window,
-                                source,
-                                "resolved model context window"
-                            );
-                            self.note_resolved_context_window(model, window);
-                            learned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        None => {
-                            tracing::debug!(
-                                model = %model,
-                                "no context window resolved at startup"
-                            );
-                        }
+                    if let Some((window, source)) = limits.context {
+                        tracing::info!(
+                            model = %model,
+                            window,
+                            source,
+                            "resolved model context window"
+                        );
+                        self.note_resolved_context_window(model, window);
+                        learned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+
+                    // The output cap rides on the same lookup: one request per
+                    // model answers both fields, and a cap the endpoint never
+                    // published is precisely what the catalogue is there to give.
+                    if let Some((output, source)) = limits.output {
+                        tracing::info!(
+                            model = %model,
+                            output,
+                            source,
+                            "resolved model output limit"
+                        );
+                        self.note_resolved_output_limit(model, output);
+                    }
+
+                    if limits.context.is_none() && limits.output.is_none() {
+                        tracing::debug!(
+                            model = %model,
+                            "no context window resolved at startup"
+                        );
                     }
                 }
             }
@@ -848,6 +936,46 @@ mod context_ceiling_tests {
     fn nothing_is_enforced_until_a_ceiling_is_known() {
         let ceilings = ContextCeilings::default();
         assert_eq!(ceilings.ceiling_for("openai-chatgpt/gpt-5.6-sol"), None);
+        assert_eq!(
+            ceilings.output_limit_for("openai-chatgpt/gpt-5.6-sol"),
+            None
+        );
+    }
+
+    /// The output cap is a separate field with a separate plausibility rule, and
+    /// recording one must not disturb the window beside it.
+    #[test]
+    fn a_discovered_output_cap_is_recorded_next_to_the_window() {
+        let ceilings = ContextCeilings::default()
+            .with_discovered("je/glm-5.3-flash", 262_144)
+            .expect("a plausible window is recorded")
+            .with_discovered_output("je/glm-5.3-flash", 131_072)
+            .expect("a plausible cap is recorded");
+
+        assert_eq!(ceilings.ceiling_for("je/glm-5.3-flash"), Some(262_144));
+        assert_eq!(ceilings.output_limit_for("je/glm-5.3-flash"), Some(131_072));
+        // Unrelated models keep nothing.
+        assert_eq!(ceilings.output_limit_for("je/other"), None);
+        assert_eq!(ceilings.ceiling_for("je/other"), None);
+
+        // A small cap is legal here — 512 is a setting, not a typo, unlike a
+        // 512-token *window*.
+        assert!(
+            ceilings
+                .with_discovered_output("je/glm-5.3-flash", 512)
+                .is_some()
+        );
+        // A byte count is not, and neither is a re-record of the same value.
+        assert!(
+            ceilings
+                .with_discovered_output("je/glm-5.3-flash", 40_000_000)
+                .is_none()
+        );
+        assert!(
+            ceilings
+                .with_discovered_output("je/glm-5.3-flash", 131_072)
+                .is_none()
+        );
     }
 
     #[test]

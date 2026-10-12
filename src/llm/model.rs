@@ -161,8 +161,16 @@ const RESPONSE_RESERVE: f32 = 0.15;
 /// The model needs room to answer, and the preamble and tool definitions are
 /// charged to the same window as the history. The ceiling is the size of a whole
 /// request, so subtracting the overhead here is the only place it is charged.
-fn context_budget(ceiling: usize, overhead: usize) -> usize {
-    let reserve = (ceiling as f32 * RESPONSE_RESERVE) as usize;
+fn context_budget(ceiling: usize, overhead: usize, output_cap: Option<usize>) -> usize {
+    let fraction = (ceiling as f32 * RESPONSE_RESERVE) as usize;
+    // Never reserve more room for the answer than the model will emit: one whose
+    // own cap is below the fraction frees the difference for history, and one
+    // whose cap is above it stays bounded by the fraction as before. With no
+    // discovered cap the fraction alone applies.
+    let reserve = match output_cap {
+        Some(cap) => fraction.min(cap),
+        None => fraction,
+    };
     ceiling.saturating_sub(reserve).saturating_sub(overhead)
 }
 
@@ -616,7 +624,11 @@ impl SpacebotModel {
             return history_tokens(request) + overhead;
         };
 
-        let budget = context_budget(ceiling, overhead);
+        let budget = context_budget(
+            ceiling,
+            overhead,
+            self.llm_manager.output_limit(&self.full_model_name),
+        );
         let before = history_tokens(request);
         if budget == 0 {
             tracing::warn!(
@@ -678,6 +690,28 @@ impl SpacebotModel {
         after + overhead
     }
 
+    /// Ask the provider for the model's own output cap, when one was discovered.
+    ///
+    /// Providers apply a default `max_tokens` this side cannot see, and it can sit
+    /// well below what the model will emit. Sending the discovered cap is the only
+    /// way the request decides that; with no cap discovered the field stays absent
+    /// and the provider keeps its own default, which is what every request did
+    /// before the field was populated. A value a caller set is never overwritten.
+    fn apply_output_limit(&self, request: &mut CompletionRequest) {
+        if request.max_tokens.is_some() {
+            return;
+        }
+        let Some(cap) = self.llm_manager.output_limit(&self.full_model_name) else {
+            return;
+        };
+        tracing::debug!(
+            model = %self.full_model_name,
+            max_tokens = cap,
+            "sending the discovered output cap"
+        );
+        request.max_tokens = Some(cap as u64);
+    }
+
     /// Repair a history a provider has already rejected, for one retry.
     ///
     /// The pre-send pass pairs every result, so a mismatch that survives it is
@@ -736,6 +770,7 @@ impl SpacebotModel {
         &self,
         mut request: CompletionRequest,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
+        self.apply_output_limit(&mut request);
         let sent_tokens = self.enforce_context_ceiling(&mut request);
         let result = self.call_provider(request).await;
 
@@ -753,17 +788,21 @@ impl SpacebotModel {
     }
 
     /// Send a prepared request to whichever provider this model belongs to.
-    /// Best-effort: learn this model's real context window from the provider's
-    /// `/models` listing, then from models.dev.
+    /// Best-effort: learn this model's real context window and output cap from
+    /// the provider's `/models` listing and models.dev, in that order.
     ///
-    /// Runs at most once per model per process: the manager memoises an answer,
-    /// and this returns immediately once one is known. Every failure is soft —
+    /// Runs at most once per model per process: the manager memoises each answer,
+    /// and this returns immediately once both are known. Every failure is soft —
     /// the caller simply keeps the ceiling it already had.
     async fn maybe_resolve_context_window(&self, provider_config: &ProviderConfig) {
         if self
             .llm_manager
             .context_window_discovered(&self.full_model_name)
             .is_some()
+            && self
+                .llm_manager
+                .output_limit_discovered(&self.full_model_name)
+                .is_some()
         {
             return;
         }
@@ -782,41 +821,52 @@ impl SpacebotModel {
 
         let models_url = routing::build_endpoint(&provider_config.base_url, "/models");
 
-        let resolved = crate::llm::context_window::resolve_context_window(
+        let limits = crate::llm::context_window::resolve_model_limits(
             self.llm_manager.http_client(),
             &models_url,
             Some(provider_config.api_key.as_str()),
             &cache_path,
             &self.model_name,
+            &crate::llm::context_window::DiscoverySource::default().rungs(),
         )
         .await;
 
-        match resolved {
-            Some((window, source)) => {
-                tracing::info!(
-                    model = %self.full_model_name,
-                    window,
-                    source,
-                    "resolved model context window"
-                );
-                self.llm_manager
-                    .note_resolved_context_window(&self.full_model_name, window);
-            }
-            None => {
-                // No usable answer: stay on the default rather than guess between
-                // near neighbours like `glm-5.3` and `glm-5.3-flash`, which are
-                // different models with different windows.
-                let default = self
-                    .llm_manager
-                    .context_ceiling(&self.full_model_name)
-                    .map(|tokens| tokens.to_string())
-                    .unwrap_or_else(|| "unset".to_string());
-                tracing::info!(
-                    "no models.dev match for {}, using default {}",
-                    self.model_name,
-                    default
-                );
-            }
+        if let Some((window, source)) = limits.context {
+            tracing::info!(
+                model = %self.full_model_name,
+                window,
+                source,
+                "resolved model context window"
+            );
+            self.llm_manager
+                .note_resolved_context_window(&self.full_model_name, window);
+        }
+
+        if let Some((output, source)) = limits.output {
+            tracing::info!(
+                model = %self.full_model_name,
+                output,
+                source,
+                "resolved model output limit"
+            );
+            self.llm_manager
+                .note_resolved_output_limit(&self.full_model_name, output);
+        }
+
+        if limits.context.is_none() && limits.output.is_none() {
+            // No usable answer: stay on the default rather than guess between
+            // near neighbours like `glm-5.3` and `glm-5.3-flash`, which are
+            // different models with different windows.
+            let default = self
+                .llm_manager
+                .context_ceiling(&self.full_model_name)
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unset".to_string());
+            tracing::info!(
+                "no models.dev match for {}, using default {}",
+                self.model_name,
+                default
+            );
         }
     }
 
@@ -1391,6 +1441,7 @@ impl CompletionModel for SpacebotModel {
         self.inject_volatile_epilogue(&mut request);
         // Streaming has no fallback chain, so this model is the one that
         // receives the request and the one a refusal belongs to.
+        self.apply_output_limit(&mut request);
         let sent_tokens = self.enforce_context_ceiling(&mut request);
 
         let capture_started = self
@@ -5974,8 +6025,8 @@ mod context_trim_tests {
                 .expect("learned")
         };
 
-        let from_whole_request = context_budget(learn(history + overhead), overhead);
-        let from_history_alone = context_budget(learn(history), overhead);
+        let from_whole_request = context_budget(learn(history + overhead), overhead, None);
+        let from_history_alone = context_budget(learn(history), overhead, None);
 
         assert!(
             from_whole_request > from_history_alone,
@@ -5988,7 +6039,29 @@ mod context_trim_tests {
     /// Overhead alone can fill the window, and there is nothing to trim then.
     #[test]
     fn a_budget_cannot_go_below_zero() {
-        assert_eq!(context_budget(10_000, 50_000), 0);
+        assert_eq!(context_budget(10_000, 50_000, None), 0);
+    }
+
+    /// The answer reserve never exceeds what the model will actually emit, so a
+    /// small output cap hands the difference back to the history.
+    #[test]
+    fn a_discovered_output_cap_bounds_the_response_reserve() {
+        // 15% of a 1M window is 150k, which is more than this model can answer.
+        let uncapped = context_budget(1_000_000, 0, None);
+        let capped = context_budget(1_000_000, 0, Some(131_072));
+
+        assert_eq!(uncapped, 850_000);
+        assert_eq!(capped, 868_928);
+        assert!(
+            capped > uncapped,
+            "a cap below the fraction must free room for history"
+        );
+
+        // A cap above the fraction leaves the reserve where it was.
+        assert_eq!(context_budget(1_000_000, 0, Some(384_000)), uncapped);
+
+        // And a tiny cap frees all but that token of the reserve for history.
+        assert_eq!(context_budget(1_000_000, 0, Some(1)), 999_999);
     }
 
     fn assistant_tool_call(id: &str) -> Message {
