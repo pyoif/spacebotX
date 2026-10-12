@@ -1,6 +1,7 @@
 //! Domain type definitions for Spacebot configuration.
 
 use crate::error::{ConfigError, Result};
+use crate::llm::context_window::DiscoverySource;
 use crate::llm::routing::RoutingConfig;
 use crate::secrets::store::{InstancePattern, SecretField, SystemSecrets};
 
@@ -649,6 +650,14 @@ pub struct DefaultsConfig {
     /// discovered, while the default is only a placeholder that yields to a
     /// window discovered from the provider.
     pub context_window_explicit: bool,
+    /// Which metadata source context/output discovery consults first.
+    ///
+    /// `endpoint` — the default — is the ladder's historical order: this
+    /// deployment's own `/models` listing, then models.dev. `models_dev` flips it
+    /// for a provider whose listing under-reports what the backend enforces.
+    /// Only the order changes: each ladder still falls through to the other
+    /// source for a field the first one did not publish.
+    pub discovery_source: DiscoverySource,
     pub compaction: CompactionConfig,
     pub memory_persistence: MemoryPersistenceConfig,
     pub coalesce: CoalesceConfig,
@@ -695,6 +704,7 @@ impl std::fmt::Debug for DefaultsConfig {
             .field("max_turns", &self.max_turns)
             .field("branch_max_turns", &self.branch_max_turns)
             .field("context_window", &self.context_window)
+            .field("discovery_source", &self.discovery_source)
             .field("compaction", &self.compaction)
             .field("memory_persistence", &self.memory_persistence)
             .field("coalesce", &self.coalesce)
@@ -1731,6 +1741,7 @@ impl Default for DefaultsConfig {
             branch_max_turns: 50,
             context_window: 128_000,
             context_window_explicit: false,
+            discovery_source: DiscoverySource::default(),
             compaction: CompactionConfig::default(),
             memory_persistence: MemoryPersistenceConfig::default(),
             coalesce: CoalesceConfig::default(),

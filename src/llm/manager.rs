@@ -12,6 +12,7 @@ use crate::auth::OAuthCredentials as AnthropicOAuthCredentials;
 use crate::config::{ApiType, LlmConfig, ProviderConfig};
 use crate::error::{LlmError, Result};
 use crate::github_copilot_auth::CopilotToken;
+use crate::llm::context_window::DiscoverySource;
 use crate::openai_auth::OAuthCredentials as OpenAiOAuthCredentials;
 
 use anyhow::Context as _;
@@ -50,6 +51,12 @@ pub struct LlmManager {
     /// a ceiling learned by one run applies to the next without threading it
     /// through fifteen construction sites.
     context_ceilings: ArcSwap<ContextCeilings>,
+    /// Which metadata source discovery consults first.
+    ///
+    /// Beside the ceilings for the same reason they live here: every
+    /// `SpacebotModel` shares this manager, so one write covers the startup sweep
+    /// and every request-time resolution, and a config reload reaches both.
+    discovery_source: ArcSwap<DiscoverySource>,
 }
 
 /// What a request is allowed to grow to, per model.
@@ -248,6 +255,7 @@ impl LlmManager {
             openai_oauth_credentials: RwLock::new(None),
             copilot_token: RwLock::new(None),
             context_ceilings: ArcSwap::from_pointee(ContextCeilings::default()),
+            discovery_source: ArcSwap::from_pointee(DiscoverySource::default()),
         })
     }
 
@@ -329,6 +337,7 @@ impl LlmManager {
             openai_oauth_credentials: RwLock::new(openai_oauth_credentials),
             copilot_token: RwLock::new(copilot_token),
             context_ceilings: ArcSwap::from_pointee(ContextCeilings::default()),
+            discovery_source: ArcSwap::from_pointee(DiscoverySource::default()),
         })
     }
 
@@ -358,6 +367,20 @@ impl LlmManager {
             discovered: current.discovered.clone(),
             discovered_output: current.discovered_output.clone(),
         });
+    }
+
+    /// Choose which metadata source discovery consults first.
+    ///
+    /// Nothing is re-resolved here: the next resolution for a model still missing
+    /// a field picks the new order up, and an already-resolved model keeps what it
+    /// has, which is what makes a reload cheap and non-destructive.
+    pub fn set_discovery_source(&self, source: DiscoverySource) {
+        self.discovery_source.store(Arc::new(source));
+    }
+
+    /// The configured discovery order.
+    pub fn discovery_source(&self) -> DiscoverySource {
+        **self.discovery_source.load()
     }
 
     /// What this model's requests must fit inside, if anything is known.
@@ -491,7 +514,7 @@ impl LlmManager {
                         Some(provider.api_key.as_str()),
                         &cache_path,
                         &model_id,
-                        &crate::llm::context_window::DiscoverySource::default().rungs(),
+                        &self.discovery_source().rungs(),
                     )
                     .await;
 

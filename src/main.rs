@@ -1054,6 +1054,9 @@ async fn run(
             .context_window_explicit
             .then_some(config.defaults.context_window),
     );
+    // Which source discovery asks first for a window and an output cap.
+    // Endpoint-first is the ladder's historical order and the default.
+    llm_manager.set_discovery_source(config.defaults.discovery_source);
 
     // Shared embedding model (stateless, agent-agnostic)
     let embedding_cache_dir = config.instance_dir.join("embedding_cache");
@@ -1943,6 +1946,8 @@ async fn run(
                                         .context_window_explicit
                                         .then_some(new_config.defaults.context_window),
                                 );
+                                new_llm_manager
+                                    .set_discovery_source(new_config.defaults.discovery_source);
                                 api_state.set_llm_manager(new_llm_manager.clone()).await;
                                 // Update agent_humans from the reloaded config
                                 // before initialize_agents so agents see the

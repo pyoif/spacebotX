@@ -827,7 +827,7 @@ impl SpacebotModel {
             Some(provider_config.api_key.as_str()),
             &cache_path,
             &self.model_name,
-            &crate::llm::context_window::DiscoverySource::default().rungs(),
+            &self.llm_manager.discovery_source().rungs(),
         )
         .await;
 

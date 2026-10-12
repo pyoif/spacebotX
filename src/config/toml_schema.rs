@@ -1,6 +1,7 @@
 // -- TOML deserialization types --
 
 use super::types::ToolUseEnforcement;
+use crate::llm::context_window::DiscoverySource;
 
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
@@ -301,6 +302,11 @@ pub(super) struct TomlDefaultsConfig {
     pub(super) max_turns: Option<usize>,
     pub(super) branch_max_turns: Option<usize>,
     pub(super) context_window: Option<usize>,
+    /// `endpoint` (default) or `models_dev`: which source discovery asks first.
+    ///
+    /// Deserialized as the enum itself, so a typo fails the config load with the
+    /// two accepted values named, rather than silently keeping the default.
+    pub(super) discovery_source: Option<DiscoverySource>,
     pub(super) tool_use_enforcement: Option<ToolUseEnforcement>,
     pub(super) compaction: Option<TomlCompactionConfig>,
     pub(super) memory_persistence: Option<TomlMemoryPersistenceConfig>,

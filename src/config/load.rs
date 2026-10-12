@@ -1661,6 +1661,10 @@ impl Config {
                 .context_window
                 .unwrap_or(base_defaults.context_window),
             context_window_explicit: toml.defaults.context_window.is_some(),
+            discovery_source: toml
+                .defaults
+                .discovery_source
+                .unwrap_or(base_defaults.discovery_source),
             tool_use_enforcement: toml
                 .defaults
                 .tool_use_enforcement
@@ -2753,6 +2757,50 @@ fn load_human_md(human_dir: &std::path::Path) -> Option<String> {
     match std::fs::read_to_string(&path) {
         Ok(content) if !content.trim().is_empty() => Some(content),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod discovery_source_tests {
+    use super::*;
+    use crate::llm::context_window::DiscoverySource;
+
+    /// Unset in the TOML, discovery stays endpoint-first: the knob's default has
+    /// to preserve the order every deployment already gets, which is what makes
+    /// adding it a pure addition.
+    #[test]
+    fn the_discovery_source_defaults_to_endpoint_first() {
+        let toml: TomlDefaultsConfig = toml::from_str("").unwrap();
+        assert_eq!(toml.discovery_source, None);
+        assert_eq!(
+            DefaultsConfig::default().discovery_source,
+            DiscoverySource::Endpoint
+        );
+    }
+
+    /// Both documented values parse, and nothing else does — a typo should fail
+    /// the load with the accepted values named rather than quietly keep the
+    /// default and leave the operator believing they changed something.
+    #[test]
+    fn the_discovery_source_parses_only_its_two_values() {
+        let toml: TomlDefaultsConfig = toml::from_str("discovery_source = \"models_dev\"").unwrap();
+        assert_eq!(toml.discovery_source, Some(DiscoverySource::ModelsDev));
+
+        let toml: TomlDefaultsConfig = toml::from_str("discovery_source = \"endpoint\"").unwrap();
+        assert_eq!(toml.discovery_source, Some(DiscoverySource::Endpoint));
+
+        assert!(toml::from_str::<TomlDefaultsConfig>("discovery_source = \"catalogue\"").is_err());
+    }
+
+    /// The knob reaches `DefaultsConfig`, which is what `main` hands the manager.
+    #[test]
+    fn the_discovery_source_resolves_from_toml_into_defaults() {
+        let base = DefaultsConfig::default();
+        let toml: TomlDefaultsConfig = toml::from_str("discovery_source = \"models_dev\"").unwrap();
+        assert_eq!(
+            toml.discovery_source.unwrap_or(base.discovery_source),
+            DiscoverySource::ModelsDev
+        );
     }
 }
 

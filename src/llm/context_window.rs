@@ -1178,4 +1178,18 @@ mod tests {
         }
         assert_eq!(limits, ModelLimits::default());
     }
+
+    #[test]
+    fn the_default_source_keeps_the_historical_endpoint_first_order() {
+        assert_eq!(DiscoverySource::default(), DiscoverySource::Endpoint);
+        assert_eq!(
+            DiscoverySource::default().rungs(),
+            [DiscoverySource::Endpoint, DiscoverySource::ModelsDev]
+        );
+        // The knob only reorders; both sources stay on the ladder either way.
+        assert_eq!(
+            DiscoverySource::ModelsDev.rungs(),
+            [DiscoverySource::ModelsDev, DiscoverySource::Endpoint]
+        );
+    }
 }
