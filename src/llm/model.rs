@@ -789,7 +789,9 @@ impl SpacebotModel {
 
     /// Send a prepared request to whichever provider this model belongs to.
     /// Best-effort: learn this model's real context window and output cap from
-    /// the provider's `/models` listing and models.dev, in that order.
+    /// the provider's `/models` listing and models.dev, in that order. An
+    /// Anthropic id resolves through the catalogue alone, since its listing
+    /// carries no window.
     ///
     /// Runs at most once per model per process: the manager memoises each answer,
     /// and this returns immediately once both are known. Every failure is soft —
@@ -807,17 +809,22 @@ impl SpacebotModel {
             return;
         }
 
-        // This lookup is defined for OpenAI-shaped `/models` responses; Anthropic
-        // publishes its listing through a different API that is out of scope.
-        if matches!(provider_config.api_type, ApiType::Anthropic) {
-            return;
-        }
-
         // Without an instance directory there is nowhere to cache models.dev, and
         // the configured default is the correct answer anyway.
         let Some(cache_path) = self.llm_manager.models_dev_cache_path() else {
             return;
         };
+
+        // Anthropic's listing carries no window, so its ids resolve through the
+        // catalogue alone; every other provider follows the configured order.
+        let configured_rungs = self.llm_manager.discovery_source().rungs();
+        let catalogue_rungs = crate::llm::context_window::DiscoverySource::catalogue_rungs();
+        let rungs: &[crate::llm::context_window::DiscoverySource] =
+            if matches!(provider_config.api_type, ApiType::Anthropic) {
+                &catalogue_rungs
+            } else {
+                &configured_rungs
+            };
 
         let models_url = routing::build_endpoint(&provider_config.base_url, "/models");
 
@@ -827,7 +834,7 @@ impl SpacebotModel {
             Some(provider_config.api_key.as_str()),
             &cache_path,
             &self.model_name,
-            &self.llm_manager.discovery_source().rungs(),
+            rungs,
         )
         .await;
 

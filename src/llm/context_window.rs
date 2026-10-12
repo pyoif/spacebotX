@@ -466,6 +466,18 @@ impl DiscoverySource {
             DiscoverySource::ModelsDev => [DiscoverySource::ModelsDev, DiscoverySource::Endpoint],
         }
     }
+
+    /// The rungs for a provider whose own listing cannot carry a window.
+    ///
+    /// Anthropic is the case: `/v1/models` answers with an id, a display name, a
+    /// creation date and a type, and no window field in any shape this resolver
+    /// reads (its documented shape — the endpoint refuses an unauthenticated call,
+    /// so it was not probed from here). Asking it anyway would be a request that
+    /// cannot succeed, so the catalogue is the only rung. The configured order is
+    /// untouched: it still governs every provider whose listing does answer.
+    pub fn catalogue_rungs() -> [DiscoverySource; 1] {
+        [DiscoverySource::ModelsDev]
+    }
 }
 
 /// Label for a value that came from the endpoint's own listing.
@@ -1177,6 +1189,49 @@ mod tests {
             limits.fold(rung, Some(&json!({ "data": [] })), None, "m");
         }
         assert_eq!(limits, ModelLimits::default());
+    }
+
+    #[test]
+    fn the_catalogue_only_ladder_asks_models_dev_alone() {
+        assert_eq!(
+            DiscoverySource::catalogue_rungs(),
+            [DiscoverySource::ModelsDev]
+        );
+    }
+
+    /// Anthropic's ids have to resolve through the catalogue, since that is the
+    /// only source with a window for them.
+    #[test]
+    fn anthropic_ids_resolve_from_the_catalogue() {
+        let data = json!({
+            "anthropic/claude-sonnet-4-6": { "limit": { "context": 200_000, "output": 64_000 } }
+        });
+
+        assert_eq!(
+            resolve_from_models_dev("claude-sonnet-4-6", &data),
+            Some((
+                "anthropic/claude-sonnet-4-6".to_string(),
+                IdMatch::VendorPrefix,
+                200_000
+            ))
+        );
+        assert_eq!(
+            resolve_output_limit_from_models_dev("claude-sonnet-4-6", &data),
+            Some((
+                "anthropic/claude-sonnet-4-6".to_string(),
+                IdMatch::VendorPrefix,
+                64_000
+            ))
+        );
+
+        // The ladder runs over the catalogue alone, so no endpoint body is
+        // required for these ids to resolve.
+        let mut limits = ModelLimits::default();
+        for rung in DiscoverySource::catalogue_rungs() {
+            limits.fold(rung, None, Some(&data), "claude-sonnet-4-6");
+        }
+        assert_eq!(limits.context, Some((200_000, MODELS_DEV_SOURCE)));
+        assert_eq!(limits.output, Some((64_000, MODELS_DEV_SOURCE)));
     }
 
     #[test]

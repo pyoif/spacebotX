@@ -495,16 +495,24 @@ impl LlmManager {
                     let Ok(provider) = self.get_provider(&provider_id) else {
                         continue;
                     };
-                    // Anthropic publishes its listing through a different API,
-                    // so there is nothing here shaped like `/models` to read.
-                    if matches!(provider.api_type, ApiType::Anthropic) {
-                        continue;
-                    }
                     // Without an instance directory there is nowhere to cache
                     // models.dev, and the configured default stands anyway.
                     let Some(cache_path) = self.models_dev_cache_path() else {
                         continue;
                     };
+
+                    // A provider whose listing cannot carry a window is asked
+                    // through the catalogue alone — the same ladder the
+                    // request-time path uses, so startup and first request agree.
+                    let configured_rungs = self.discovery_source().rungs();
+                    let catalogue_rungs =
+                        crate::llm::context_window::DiscoverySource::catalogue_rungs();
+                    let rungs: &[crate::llm::context_window::DiscoverySource] =
+                        if matches!(provider.api_type, ApiType::Anthropic) {
+                            &catalogue_rungs
+                        } else {
+                            &configured_rungs
+                        };
 
                     let models_url =
                         crate::llm::routing::build_endpoint(&provider.base_url, "/models");
@@ -514,7 +522,7 @@ impl LlmManager {
                         Some(provider.api_key.as_str()),
                         &cache_path,
                         &model_id,
-                        &self.discovery_source().rungs(),
+                        rungs,
                     )
                     .await;
 
