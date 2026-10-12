@@ -267,6 +267,13 @@ pub struct Worker {
     pub hook: SpacebotHook,
     /// System prompt loaded from prompts/WORKER.md.
     pub system_prompt: crate::prompts::SegmentedPrompt,
+    /// Volatile blocks appended AFTER the conversation history at send time
+    /// (the ambient memory store and working memory). Rendered once at spawn;
+    /// unlike the channel these are not re-rendered per turn, so a memory
+    /// written while this worker runs does not appear in its own epilogue —
+    /// the same freshness the system-prompt version had, with the difference
+    /// that a write no longer invalidates the worker's cached prefix.
+    pub volatile_epilogue: Option<String>,
     /// Input channel for interactive workers (follow-up loop).
     pub input_rx: Option<mpsc::Receiver<WorkerFollowUp>>,
     /// Context injection channel. Unlike `input_rx` (which drives the
@@ -313,6 +320,15 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// Attach the ambient memory blocks as this worker's volatile epilogue.
+    ///
+    /// Appended after the conversation history at send time, so a memory write
+    /// anywhere in the system never truncates this worker's cached prefix.
+    pub fn with_volatile_epilogue(mut self, epilogue: Option<String>) -> Self {
+        self.volatile_epilogue = epilogue.filter(|text| !text.is_empty());
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build(
         id: WorkerId,
@@ -359,6 +375,7 @@ impl Worker {
                 deps,
                 hook,
                 system_prompt: system_prompt.into(),
+                volatile_epilogue: None,
                 input_rx,
                 inject_rx: Some(inject_rx),
                 browser_config,
@@ -685,6 +702,10 @@ impl Worker {
                     blocks: self.system_prompt.blocks.clone(),
                 },
             );
+
+        // R3: attach the ambient memory blocks after the conversation history,
+        // so a memory write never truncates this worker's cached prefix.
+        let model = model.with_volatile_epilogue(self.volatile_epilogue.clone());
 
         let agent = AgentBuilder::new(model)
             .preamble(&self.system_prompt.text)

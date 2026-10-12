@@ -836,29 +836,67 @@ pub async fn build_project_context(
     }
 }
 
+/// Append the worker's task board and render its ambient memory blocks.
+///
+/// The memory store and working memory are **returned** as the worker's
+/// volatile epilogue rather than appended to the system prompt: both change
+/// independently of this worker's own turns (any process can write a memory at
+/// any moment), so leaving them in the cached prefix meant a write elsewhere
+/// truncated this worker's cache. The epilogue is appended after the
+/// conversation history, where nothing above it is invalidated.
+///
+/// The task board stays here: task transitions churn on their own schedule and
+/// are not driven by memory writes.
+///
+/// Returns `None` when ambient memory is disabled or both blocks are empty.
 async fn append_worker_memory_context(
     system_prompt: &mut crate::prompts::SegmentedPrompt,
     deps: &AgentDeps,
     channel_id: Option<&ChannelId>,
     memory_mode: crate::conversation::settings::WorkerMemoryMode,
-) {
+) -> Option<String> {
     if !memory_mode.ambient_enabled() {
-        return;
+        return None;
     }
 
     let cortex_config = **deps.runtime_config.cortex.load();
-    match crate::memory::render::render_memory_store(
+    let memory_store = match crate::memory::render::render_memory_store(
         deps.memory_search.store(),
         cortex_config.memory_render_max_words,
     )
     .await
     {
-        Ok(memory_store) if !memory_store.is_empty() => {
-            system_prompt.append_section("knowledge_synthesis", &memory_store);
+        Ok(text) if !text.is_empty() => Some(text),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "worker ambient memory store render failed");
+            None
         }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "worker ambient memory store render failed"),
-    }
+    };
+
+    // A detached worker has no channel, so it has no working memory to render.
+    let working_memory = match channel_id {
+        Some(channel_id) => {
+            let working_memory_config = **deps.runtime_config.working_memory.load();
+            let timezone = deps.working_memory.timezone();
+            match crate::memory::working::render_working_memory(
+                &deps.working_memory,
+                channel_id.as_ref(),
+                &working_memory_config,
+                timezone,
+            )
+            .await
+            {
+                Ok(text) if !text.is_empty() => Some(format!("## Recent Activity\n{text}")),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::warn!(%error, "worker ambient working memory render failed");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
 
     // The task board is its own block: task transitions churn independently of
     // memory writes, and keeping them in the memory block truncated its
@@ -871,26 +909,14 @@ async fn append_worker_memory_context(
         Err(error) => tracing::warn!(%error, "worker ambient active tasks render failed"),
     }
 
-    let Some(channel_id) = channel_id else {
-        return;
-    };
-    let working_memory_config = **deps.runtime_config.working_memory.load();
-    let timezone = deps.working_memory.timezone();
-    match crate::memory::working::render_working_memory(
-        &deps.working_memory,
-        channel_id.as_ref(),
-        &working_memory_config,
-        timezone,
-    )
-    .await
-    {
-        Ok(working_memory) if !working_memory.is_empty() => system_prompt.append_section(
-            "working_memory",
-            &format!("## Recent Activity\n{working_memory}"),
-        ),
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "worker ambient working memory render failed"),
+    let mut epilogue = String::new();
+    for part in [memory_store, working_memory].into_iter().flatten() {
+        if !epilogue.is_empty() {
+            epilogue.push_str("\n\n");
+        }
+        epilogue.push_str(&part);
     }
+    (!epilogue.is_empty()).then_some(epilogue)
 }
 
 /// Spawn a worker from a ChannelState. Used by the SpawnWorkerTool.
@@ -1020,7 +1046,7 @@ async fn spawn_worker_inner(
         "tool_use_enforcement",
     );
 
-    append_worker_memory_context(
+    let worker_memory_epilogue = append_worker_memory_context(
         &mut system_prompt,
         &state.deps,
         Some(&state.channel_id),
@@ -1138,6 +1164,7 @@ async fn spawn_worker_inner(
         (worker, None, Some(inject_tx))
     };
     let (worker, input_tx, injection_tx) = worker;
+    let worker = worker.with_volatile_epilogue(worker_memory_epilogue);
     let transcript_snapshot = worker.transcript_snapshot();
     let (runtime_control, cancel_rx, terminal_notify) = WorkerRuntimeControl::new(
         transcript_snapshot.clone(),
@@ -2586,7 +2613,7 @@ pub async fn restore_idle_worker_into_registry(
                     .map_err(|error| format!("failed to render worker prompt: {error}"))?,
                 "tool_use_enforcement",
             );
-            append_worker_memory_context(
+            let resume_memory_epilogue = append_worker_memory_context(
                 &mut system_prompt,
                 &state.deps,
                 state.channel_id.as_ref(),
@@ -2629,6 +2656,7 @@ pub async fn restore_idle_worker_into_registry(
                     .resolve_model("worker")
                     .map(String::from),
             );
+            let worker = worker.with_volatile_epilogue(resume_memory_epilogue);
 
             let worker_span = tracing::info_span!(
                 "worker.resume",

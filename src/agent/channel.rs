@@ -3166,33 +3166,19 @@ impl Channel {
 
     /// Render the semi-volatile memory layers that stay in the system prompt.
     ///
-    /// Returns `(channel_activity_map, participant_context,
-    /// knowledge_synthesis_text, active_tasks_text)`. Working memory is NOT
-    /// here — R2 moved it to the volatile epilogue appended after history.
-    async fn render_memory_layers(&self) -> (String, String, Option<String>, Option<String>) {
+    /// Returns `(channel_activity_map, participant_context, active_tasks_text)`.
+    /// Neither working memory nor the memory store is here: both are per-turn
+    /// content that belongs in the volatile epilogue appended after history.
+    /// The store moved there because a memory write rewrote the block in the
+    /// cached prefix, truncating every byte above it — the audit measured
+    /// ~12.8k fresh tokens per write turn on the channel and ~30.7k on a
+    /// branch. See [`Self::render_memory_store_block`].
+    async fn render_memory_layers(&self) -> (String, String, Option<String>) {
         if matches!(self.resolved_settings.memory, MemoryMode::Off) {
-            return (String::new(), String::new(), None, None);
+            return (String::new(), String::new(), None);
         }
 
         let rc = &self.deps.runtime_config;
-        // The knowledge-context slot is a deterministic store render — no
-        // LLM synthesis, byte-stable between memory writes.
-        let knowledge_synthesis_text = {
-            let cortex_config = **rc.cortex.load();
-            match crate::memory::render::render_memory_store(
-                self.deps.memory_search.store(),
-                cortex_config.memory_render_max_words,
-            )
-            .await
-            {
-                Ok(text) if !text.is_empty() => Some(text),
-                Ok(_) => None,
-                Err(error) => {
-                    tracing::warn!(channel_id = %self.id, %error, "memory store render failed");
-                    None
-                }
-            }
-        };
         let wm_config = **rc.working_memory.load();
         let timezone = self.deps.working_memory.timezone();
 
@@ -3255,12 +3241,35 @@ impl Channel {
             }
         };
 
-        (
-            channel_activity_map,
-            participant_context,
-            knowledge_synthesis_text,
-            active_tasks_text,
+        (channel_activity_map, participant_context, active_tasks_text)
+    }
+
+    /// Render the memory store for the volatile epilogue.
+    ///
+    /// The store is a deterministic, LLM-free render of what the agent knows.
+    /// It used to sit in the cached system prompt, where every write rewrote
+    /// its bytes and truncated the cacheable prefix at that point: the audit
+    /// measured a full history re-read (~12.8k fresh tokens on the channel,
+    /// ~30.7k on a branch) per write. It now renders as the first block of the
+    /// post-history epilogue, so a write costs only the store's own bytes.
+    async fn render_memory_store_block(&self) -> Option<String> {
+        if matches!(self.resolved_settings.memory, MemoryMode::Off) {
+            return None;
+        }
+        let cortex_config = **self.deps.runtime_config.cortex.load();
+        match crate::memory::render::render_memory_store(
+            self.deps.memory_search.store(),
+            cortex_config.memory_render_max_words,
         )
+        .await
+        {
+            Ok(text) if !text.is_empty() => Some(text),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(channel_id = %self.id, %error, "memory store render failed");
+                None
+            }
+        }
     }
 
     /// Render the compact active-goals list for the system prompt.
@@ -3380,17 +3389,12 @@ impl Channel {
 
         let project_context = self.build_project_context(&prompt_engine).await;
 
-        let (
-            channel_activity_map,
-            participant_context,
-            knowledge_synthesis_text,
-            active_tasks_text,
-        ) = self.render_memory_layers().await;
+        let (channel_activity_map, participant_context, active_tasks_text) =
+            self.render_memory_layers().await;
 
         let active_goals = self.render_active_goals().await;
 
         let empty_to_none = |s: String| if s.is_empty() { None } else { Some(s) };
-        let non_empty_option = |value: Option<String>| value.filter(|text| !text.is_empty());
         let routing = rc.routing.load();
         // Enforcement is model-specific, so it has to be rendered for the model
         // the turn will actually use — a conversation override, when set, not
@@ -3418,7 +3422,11 @@ impl Channel {
         let mut segmented =
             prompt_engine.render_channel_prompt(crate::prompts::ChannelPromptInputs {
                 identity_context: empty_to_none(identity_context),
-                knowledge_synthesis: non_empty_option(knowledge_synthesis_text),
+                // The memory store is NOT rendered into the cached system
+                // prompt: a write rewrote its bytes and truncated the prefix
+                // at that point. `build_volatile_epilogue` renders it as the
+                // first post-history block instead.
+                knowledge_synthesis: None,
                 skills_prompt: empty_to_none(skills_prompt),
                 worker_capabilities,
                 conversation_context: self.conversation_context.clone(),
@@ -3458,46 +3466,44 @@ impl Channel {
         Ok(segmented)
     }
 
-    /// R2: the per-turn volatile epilogue — the status block and the wall-clock
-    /// line.
+    /// R2/R3: the per-turn volatile epilogue — the memory store, the working
+    /// memory, the status block and the wall-clock line.
     ///
-    /// These change every turn (status) or every second (time), so they must
-    /// NOT live inside the cached system prompt. The caller attaches this to the
-    /// model via `with_volatile_epilogue`, which appends it as a system message
-    /// after the conversation history: it lands at the tail of the request and
-    /// never rewrites the bytes above it, keeping the system prompt's prefix
-    /// cache intact. Returns `None` when both halves are empty.
+    /// These change every turn (store, status) or every second (time), so they
+    /// must NOT live inside the cached system prompt. The caller attaches this
+    /// to the model via `with_volatile_epilogue`, which appends it as a system
+    /// message after the conversation history: it lands at the tail of the
+    /// request and never rewrites the bytes above it, keeping the system
+    /// prompt's prefix cache intact. Returns `None` when every part is empty.
+    ///
+    /// Block order is deliberate: reference material first (the store), then
+    /// the recent-activity narrative, then live operational state, then the
+    /// clock — least volatile to most, and the same order a reader wants, with
+    /// the state they act on closest to the point of generation.
     pub(crate) async fn build_volatile_epilogue(&self) -> crate::error::Result<Option<String>> {
+        let memory_store = self.render_memory_store_block().await;
         let status_text = self.render_status_block().await;
         let working_memory = self.render_working_memory_block().await;
         let current_time_line =
             TemporalContext::from_runtime(self.deps.runtime_config.as_ref()).current_time_line();
 
-        let mut epilogue = String::new();
-        if !working_memory.is_empty() {
-            epilogue.push_str(&working_memory);
-        }
-        if let Some(status_text) = status_text.filter(|text| !text.is_empty()) {
-            if !epilogue.is_empty() {
-                epilogue.push_str("\n\n");
-            }
-            epilogue.push_str("## Current Status\n\n");
-            epilogue.push_str(
-                "The status block is operational awareness — your running processes and their \
-                 unrelayed results. It is not content to narrate, and a result already delivered \
-                 never gets re-relayed from here.\n\n",
-            );
-            epilogue.push_str(&status_text);
-        }
-        if !current_time_line.is_empty() {
-            if !epilogue.is_empty() {
-                epilogue.push_str("\n\n");
-            }
-            epilogue.push_str("## Current Date and Time\n\n");
-            epilogue.push_str(&current_time_line);
-        }
+        let status = status_text
+            .filter(|text| !text.is_empty())
+            .map(|text| {
+                format!(
+                    "## Current Status\n\n\
+                     The status block is operational awareness — your running processes and their \
+                     unrelayed results. It is not content to narrate, and a result already delivered \
+                     never gets re-relayed from here.\n\n{text}"
+                )
+            });
 
-        Ok((!epilogue.is_empty()).then_some(epilogue))
+        Ok(assemble_volatile_epilogue(
+            memory_store.as_deref(),
+            &working_memory,
+            status.as_deref(),
+            &current_time_line,
+        ))
     }
 
     /// Render the working-memory block for the volatile epilogue.
@@ -5131,16 +5137,107 @@ fn is_dm_conversation_id(conv_id: &str) -> bool {
                 .is_some_and(|last| last.starts_with('D'))
 }
 
+/// Assemble the volatile epilogue from its parts, in block order.
+///
+/// Split out from `build_volatile_epilogue` so the ordering — which decides
+/// what is cacheable and what is not — is testable without a live channel.
+/// Everything here is post-history, so nothing in this string can truncate the
+/// cached prefix, and each part that is absent leaves no stray separator.
+///
+/// Order: memory store → working memory → status → wall-clock. Reference
+/// material first, live state last.
+fn assemble_volatile_epilogue(
+    memory_store: Option<&str>,
+    working_memory: &str,
+    status: Option<&str>,
+    current_time_line: &str,
+) -> Option<String> {
+    let mut epilogue = String::new();
+    for part in [
+        memory_store.unwrap_or(""),
+        working_memory,
+        status.unwrap_or(""),
+    ] {
+        if part.is_empty() {
+            continue;
+        }
+        if !epilogue.is_empty() {
+            epilogue.push_str("\n\n");
+        }
+        epilogue.push_str(part);
+    }
+    if !current_time_line.is_empty() {
+        if !epilogue.is_empty() {
+            epilogue.push_str("\n\n");
+        }
+        epilogue.push_str("## Current Date and Time\n\n");
+        epilogue.push_str(current_time_line);
+    }
+
+    (!epilogue.is_empty()).then_some(epilogue)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ObserveModeFallbackState, ReflectionSignal, branch_working_memory_event_summary,
-        classify_conversational_event_summary, compute_listen_mode_invocation, decision_user_id,
-        extract_decision_summary_from_reply, format_conversational_event_summary,
-        is_dm_conversation_id, recv_channel_event, should_process_event_for_channel,
-        should_send_discord_quiet_mode_ping_ack, should_send_quiet_mode_fallback,
-        worker_outcome_already_consumed,
+        ObserveModeFallbackState, ReflectionSignal, assemble_volatile_epilogue,
+        branch_working_memory_event_summary, classify_conversational_event_summary,
+        compute_listen_mode_invocation, decision_user_id, extract_decision_summary_from_reply,
+        format_conversational_event_summary, is_dm_conversation_id, recv_channel_event,
+        should_process_event_for_channel, should_send_discord_quiet_mode_ping_ack,
+        should_send_quiet_mode_fallback, worker_outcome_already_consumed,
     };
+
+    /// R3: the memory store is the FIRST block of the epilogue, above working
+    /// memory and status. Position is what makes a memory write cheap — the
+    /// store's bytes sit past the conversation history, so a write appends to
+    /// the tail of the request instead of truncating the cached prefix.
+    #[test]
+    fn epilogue_places_the_memory_store_first() {
+        let epilogue = assemble_volatile_epilogue(
+            Some("## Memory Store\n\nScope: global\n\n- a fact"),
+            "## Recent Activity\n\n- something happened",
+            Some("## Current Status\n\nNothing running."),
+            "Now: 2026-10-12 11:44 WIB",
+        )
+        .expect("a non-empty epilogue");
+
+        let store = epilogue.find("## Memory Store").expect("store present");
+        let working = epilogue.find("## Recent Activity").expect("wm present");
+        let status = epilogue.find("## Current Status").expect("status present");
+        let time = epilogue
+            .find("## Current Date and Time")
+            .expect("time present");
+
+        assert!(
+            store < working && working < status && status < time,
+            "store → working memory → status → time, got: {epilogue}"
+        );
+        assert!(epilogue.starts_with("## Memory Store"));
+    }
+
+    /// Every part is optional, and an absent one must not leave a doubled
+    /// separator or an empty time heading behind.
+    #[test]
+    fn epilogue_omits_absent_parts_without_stray_separators() {
+        let only_time = assemble_volatile_epilogue(None, "", None, "Now: 12:00 WIB")
+            .expect("the clock alone is enough");
+        assert_eq!(only_time, "## Current Date and Time\n\nNow: 12:00 WIB");
+
+        let store_and_time =
+            assemble_volatile_epilogue(Some("## Memory Store"), "", None, "Now: 1")
+                .expect("store plus clock");
+        assert_eq!(
+            store_and_time,
+            "## Memory Store\n\n## Current Date and Time\n\nNow: 1"
+        );
+        assert!(!store_and_time.contains("\n\n\n"));
+
+        assert!(
+            assemble_volatile_epilogue(None, "", None, "").is_none(),
+            "nothing to say means no epilogue at all"
+        );
+    }
     use crate::memory::{MemoryType, WorkingMemoryEventType};
     use crate::{AgentId, ChannelId, InboundMessage, MessageContent, ProcessEvent, ProcessId};
     use std::collections::HashMap;

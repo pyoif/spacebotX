@@ -1445,6 +1445,39 @@ mod tests {
         assert_tiles(&segmented);
     }
 
+    /// R3: the memory store is NOT part of the channel's cached system prompt.
+    ///
+    /// The channel passes `knowledge_synthesis: None`; the store renders as the
+    /// first block of the volatile epilogue instead. This pins the property the
+    /// move exists for — a memory write must mutate zero bytes above the
+    /// conversation-history boundary — and a store block inside the system
+    /// prompt is precisely what violated it: the audit measured a full history
+    /// re-read (~12.8k fresh tokens) per write on the channel.
+    #[test]
+    fn channel_system_prompt_carries_no_memory_store_block() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+
+        let segmented = engine
+            .render_channel_prompt(ChannelPromptInputs {
+                knowledge_synthesis: None,
+                ..base_inputs(&engine)
+            })
+            .expect("segmented render");
+
+        assert!(
+            !segmented
+                .blocks
+                .iter()
+                .any(|block| block.id == "knowledge_synthesis"),
+            "no memory-store block may sit in the cached prefix"
+        );
+        assert!(
+            !segmented.text.contains("## Memory Store"),
+            "the store's bytes must not appear above the conversation history"
+        );
+        assert_tiles(&segmented);
+    }
+
     /// R1/R2/R5: the cached prefix is stable-first, volatile-last. Identity,
     /// capabilities and the skills index sit far above the per-turn state, and
     /// the status block — which changes every turn and is therefore the wrong
