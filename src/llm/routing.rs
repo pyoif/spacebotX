@@ -119,6 +119,25 @@ pub fn is_retriable_status(status: u16) -> bool {
     matches!(status, 429 | 502 | 503 | 504)
 }
 
+/// Marker for a 2xx provider response that carried no usable completion payload.
+///
+/// This class is deliberately distinct from a 5xx or a transport failure: the
+/// provider answered successfully but with nothing in it — no text and no tool
+/// calls. It is transient (the same request usually succeeds on a resend), so it
+/// is retryable, and naming it separately keeps logs, cache_stats attribution and
+/// tests able to tell the three apart. Every producer of this error class goes
+/// through [`empty_completion_message`].
+pub const EMPTY_COMPLETION_MARKER: &str = "provider returned an empty completion";
+
+/// Build the canonical empty-completion error text.
+///
+/// `http_note` records the successful status the provider answered with (the
+/// parse sites are only reached after a 2xx send), and `detail` names what was
+/// missing — a finish reason, a stop reason, or how the stream ended.
+pub fn empty_completion_message(provider_label: &str, http_note: &str, detail: &str) -> String {
+    format!("{provider_label} {EMPTY_COMPLETION_MARKER} ({http_note}, {detail})")
+}
+
 /// Whether a completion error message indicates a retriable failure.
 pub fn is_retriable_error(error_message: &str) -> bool {
     let lower = error_message.to_lowercase();
@@ -140,6 +159,12 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         || lower.contains("internal error")
         // Empty/malformed responses are transient provider issues
         || lower.contains("empty response")
+        // A 2xx that carried no usable payload at all (no text, no tool calls).
+        // Keyed on the shared marker so every parse site — non-stream and stream,
+        // OpenAI-shaped and Anthropic — lands in this class by construction.
+        || lower.contains(EMPTY_COMPLETION_MARKER)
+        // Older phrasing still emitted by the OpenAI chat SSE reconstruction.
+        || lower.contains("did not contain message content or tool calls")
         || lower.contains("failed to read response body")
         || lower.contains("error decoding response body")
         // SSE stream cut off before its terminal event
@@ -549,21 +574,55 @@ pub fn provider_from_model(model: &str) -> &str {
 /// Max number of fallback models to try before giving up.
 pub const MAX_FALLBACK_ATTEMPTS: usize = 3;
 
-/// Max retries per model (primary or fallback) on retriable errors.
-pub const MAX_RETRIES_PER_MODEL: usize = 3;
+/// Max attempts per model (primary or fallback) on retriable errors.
+///
+/// Six sends: the initial one plus five retries. Paired with the ladder below,
+/// that gives a transient or empty provider response roughly ten minutes of
+/// patience before the turn is abandoned.
+pub const MAX_RETRIES_PER_MODEL: usize = 6;
 
-/// Base delay for exponential backoff between retries (milliseconds).
-pub const RETRY_BASE_DELAY_MS: u64 = 500;
+/// Base delay for the retry ladder, in milliseconds.
+pub const RETRY_BASE_DELAY_MS: u64 = 1_000;
+
+/// Growth factor between consecutive retry delays (proportional backoff).
+pub const RETRY_GROWTH_FACTOR: u64 = 4;
+
+/// Upper bound on any single retry delay, in milliseconds.
+pub const RETRY_MAX_DELAY_MS: u64 = 180_000;
+
+/// How long to wait before retry `retry_index`, where the first retry is index 0.
+///
+/// The ladder is proportional: every wait is [`RETRY_GROWTH_FACTOR`] times the
+/// previous one, starting at [`RETRY_BASE_DELAY_MS`], and each wait is clamped at
+/// [`RETRY_MAX_DELAY_MS`]. That yields 1s, 4s, 16s, 64s, 180s, 180s, … — the step
+/// after 64s would be 256s, which the cap floors back to 180s.
+///
+/// Both retry layers (the model-level attempt loop and the provider HTTP send)
+/// are meant to share this ladder so the policy cannot drift between them;
+/// [`PROVIDER_HTTP_RETRY_DELAYS_MS`] is its materialized form for the HTTP layer,
+/// and a test pins the two together.
+pub fn retry_delay_ms(retry_index: usize) -> u64 {
+    let mut delay = RETRY_BASE_DELAY_MS;
+    for _ in 0..retry_index {
+        delay = delay.saturating_mul(RETRY_GROWTH_FACTOR);
+        if delay >= RETRY_MAX_DELAY_MS {
+            return RETRY_MAX_DELAY_MS;
+        }
+    }
+    delay.min(RETRY_MAX_DELAY_MS)
+}
 
 /// Total number of sends for a single provider HTTP request.
 ///
-/// One initial attempt plus three retries.
-pub const PROVIDER_HTTP_MAX_ATTEMPTS: usize = 4;
+/// One initial attempt plus five retries.
+pub const PROVIDER_HTTP_MAX_ATTEMPTS: usize = 6;
 
 /// How long to wait before each *additional* provider HTTP send, in milliseconds
-/// (~1s, ~3s, ~8s). The array is shorter than `PROVIDER_HTTP_MAX_ATTEMPTS` by
-/// exactly one, because the first attempt never waits.
-pub const PROVIDER_HTTP_RETRY_DELAYS_MS: [u64; 3] = [1_000, 3_000, 8_000];
+/// (1s, 4s, 16s, 64s, 180s). The array is shorter than
+/// `PROVIDER_HTTP_MAX_ATTEMPTS` by exactly one, because the first attempt never
+/// waits. Its values are exactly the [`retry_delay_ms`] ladder, and the test
+/// below pins them so the two representations cannot drift apart.
+pub const PROVIDER_HTTP_RETRY_DELAYS_MS: [u64; 5] = [1_000, 4_000, 16_000, 64_000, 180_000];
 
 /// Whether an HTTP response status should be retried at the provider layer.
 ///
@@ -808,6 +867,49 @@ mod tests {
                 .windows(2)
                 .all(|w| w[0] < w[1])
         );
+    }
+
+    #[test]
+    fn retry_delay_ladder_grows_proportionally_and_clamps_at_the_cap() {
+        assert_eq!(retry_delay_ms(0), 1_000);
+        assert_eq!(retry_delay_ms(1), 4_000);
+        assert_eq!(retry_delay_ms(2), 16_000);
+        assert_eq!(retry_delay_ms(3), 64_000);
+        // 64_000 * 4 would be 256_000, which the cap floors back to 180_000.
+        assert_eq!(retry_delay_ms(4), RETRY_MAX_DELAY_MS);
+        assert_eq!(retry_delay_ms(5), RETRY_MAX_DELAY_MS);
+        // The clamp holds however far past the budget the index goes.
+        assert_eq!(retry_delay_ms(64), RETRY_MAX_DELAY_MS);
+        assert_eq!(RETRY_MAX_DELAY_MS, 180_000);
+    }
+
+    #[test]
+    fn provider_http_ladder_is_the_shared_ladder_materialized() {
+        for (index, delay) in PROVIDER_HTTP_RETRY_DELAYS_MS.iter().enumerate() {
+            assert_eq!(*delay, retry_delay_ms(index), "index {index}");
+        }
+    }
+
+    #[test]
+    fn retry_budget_is_six_sends_on_both_layers() {
+        assert_eq!(MAX_RETRIES_PER_MODEL, 6);
+        assert_eq!(PROVIDER_HTTP_MAX_ATTEMPTS, 6);
+        // The model-level loop gets one delay per retry, matching the HTTP layer.
+        assert_eq!(
+            MAX_RETRIES_PER_MODEL - 1,
+            PROVIDER_HTTP_RETRY_DELAYS_MS.len()
+        );
+    }
+
+    #[test]
+    fn empty_completion_is_retriable_and_carries_its_own_marker() {
+        let message = empty_completion_message("OpenRouter", "HTTP 2xx", "finish_reason: stop");
+        assert!(message.contains(EMPTY_COMPLETION_MARKER));
+        assert!(message.contains("HTTP 2xx"));
+        assert!(message.contains("finish_reason: stop"));
+        assert!(is_retriable_error(&message));
+        // Classification lowercases, so a differently-cased rendering still lands.
+        assert!(is_retriable_error(&message.to_uppercase()));
     }
 
     #[test]

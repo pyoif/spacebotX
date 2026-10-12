@@ -4,7 +4,7 @@ use crate::agent::compactor::{advance_past_stranded_tool_results, estimate_histo
 use crate::config::{ApiType, ProviderConfig};
 use crate::llm::manager::LlmManager;
 use crate::llm::routing::{
-    self, MAX_FALLBACK_ATTEMPTS, MAX_RETRIES_PER_MODEL, RETRY_BASE_DELAY_MS, RoutingConfig,
+    self, MAX_FALLBACK_ATTEMPTS, MAX_RETRIES_PER_MODEL, RoutingConfig, retry_delay_ms,
 };
 
 use futures::StreamExt as _;
@@ -1028,7 +1028,7 @@ impl SpacebotModel {
         let mut last_error = None;
         for attempt in 0..MAX_RETRIES_PER_MODEL {
             if attempt > 0 {
-                let delay_ms = RETRY_BASE_DELAY_MS * 2u64.pow((attempt - 1) as u32);
+                let delay_ms = retry_delay_ms(attempt - 1);
                 tracing::debug!(
                     model = %model_name,
                     attempt = attempt + 1,
@@ -1629,6 +1629,12 @@ impl SpacebotModel {
                     .await
             }
             ApiType::Anthropic => {
+                // Anthropic has no incremental streaming path here: the "stream"
+                // is one non-stream completion replayed as a stream. So both the
+                // stream and the non-stream Anthropic cases are classified by
+                // `parse_anthropic_response` alone — an empty 2xx reaches the
+                // retryable empty-completion class whether the caller asked for a
+                // stream or not.
                 let response = self.attempt_completion(request).await?;
                 Ok(stream_from_completion_response(response))
             }
@@ -4054,8 +4060,15 @@ fn parse_openai_chat_sse_response(
     }
 
     if !saw_data_event {
+        // The stream opened, finished and carried no data event at all — the same
+        // blank-2xx class as an empty message, so it is retryable.
         return Err(CompletionError::ProviderError(format!(
-            "{provider_label} streaming response missing SSE data events. Body: {}",
+            "{} Body: {}",
+            routing::empty_completion_message(
+                provider_label,
+                "HTTP 2xx",
+                "missing SSE data events"
+            ),
             truncate_body(response_text)
         )));
     }
@@ -4104,8 +4117,16 @@ fn parse_openai_chat_sse_response(
         && message["content"].is_null()
         && reasoning_parts.is_empty()
     {
+        // The stream ran to its terminator without a single content-bearing
+        // delta: no text, no tool calls, no reasoning. That is a blank 2xx, not a
+        // valid turn, so it takes the retryable empty-completion class.
         return Err(CompletionError::ProviderError(format!(
-            "{provider_label} streaming response did not contain message content or tool calls. Body: {}",
+            "{} Body: {}",
+            routing::empty_completion_message(
+                provider_label,
+                "HTTP 2xx",
+                "stream ended with no message content or tool calls"
+            ),
             truncate_body(response_text)
         )));
     }
@@ -4145,9 +4166,15 @@ fn make_tool_call(id: String, name: String, arguments: serde_json::Value) -> Too
 fn parse_anthropic_response(
     body: serde_json::Value,
 ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
-    let content_blocks = body["content"]
-        .as_array()
-        .ok_or_else(|| CompletionError::ResponseError("missing content array".into()))?;
+    let content_blocks = body["content"].as_array().ok_or_else(|| {
+        // A 2xx without a `content` array is malformed rather than a deliberate
+        // "nothing to say", so it is transient and retryable.
+        CompletionError::ResponseError(routing::empty_completion_message(
+            "Anthropic",
+            "HTTP 2xx",
+            "missing content array",
+        ))
+    })?;
 
     let mut assistant_content = Vec::new();
 
@@ -4209,9 +4236,16 @@ fn parse_anthropic_response(
                     content_blocks = content_blocks.len(),
                     "unexpected empty assistant_content from Anthropic"
                 );
-                return Err(CompletionError::ResponseError(format!(
-                    "empty response from Anthropic (stop_reason: {stop_reason})"
-                )));
+                // Only the end_turn case above is a deliberate no-op. An empty
+                // body under any other stop reason is a blank 2xx, so it takes the
+                // retryable empty-completion class.
+                return Err(CompletionError::ResponseError(
+                    routing::empty_completion_message(
+                        "Anthropic",
+                        "HTTP 2xx",
+                        &format!("stop_reason: {stop_reason}"),
+                    ),
+                ));
             }
         }
     };
@@ -4242,7 +4276,15 @@ fn parse_openai_response(
     let choice = body["choices"]
         .as_array()
         .and_then(|choices| choices.first())
-        .ok_or_else(|| CompletionError::ResponseError("missing choices array".into()))?;
+        .ok_or_else(|| {
+            // A 2xx carrying no `choices` at all is the same provider glitch as a
+            // blank message, so it takes the retryable empty-completion class.
+            CompletionError::ResponseError(routing::empty_completion_message(
+                provider_label,
+                "HTTP 2xx",
+                "missing choices array",
+            ))
+        })?;
     let message = choice.get("message").unwrap_or(&serde_json::Value::Null);
 
     let mut assistant_content = Vec::new();
@@ -4312,8 +4354,13 @@ fn parse_openai_response(
             choice = ?choice,
             "empty response from provider"
         );
-        CompletionError::ResponseError(format!(
-            "empty response from {provider_label} (finish_reason: {finish_reason})"
+        // A tool-call-only reply is NOT empty: it is a valid turn whose content
+        // field is null by convention. Only a reply with neither text, tool calls
+        // nor reasoning is blank, and that one is worth retrying.
+        CompletionError::ResponseError(routing::empty_completion_message(
+            provider_label,
+            "HTTP 2xx",
+            &format!("finish_reason: {finish_reason}"),
         ))
     })?;
 
@@ -5024,7 +5071,36 @@ mod tests {
 
         let error = parse_anthropic_response(body).expect_err("should fail");
         assert!(matches!(error, CompletionError::ResponseError(_)));
-        assert!(error.to_string().contains("stop_reason: max_tokens"));
+        let message = error.to_string();
+        assert!(message.contains("stop_reason: max_tokens"));
+        assert!(message.contains(crate::llm::routing::EMPTY_COMPLETION_MARKER));
+        assert!(crate::llm::routing::is_retriable_error(&message));
+    }
+
+    #[test]
+    fn anthropic_missing_content_array_is_a_retriable_empty_completion() {
+        let body = serde_json::json!({ "stop_reason": "end_turn", "usage": {} });
+
+        let error = parse_anthropic_response(body).expect_err("should fail");
+        let message = error.to_string();
+        assert!(message.contains(crate::llm::routing::EMPTY_COMPLETION_MARKER));
+        assert!(message.contains("missing content array"));
+        assert!(crate::llm::routing::is_retriable_error(&message));
+    }
+
+    /// The one deliberate exception: an empty body under `end_turn` is Anthropic's
+    /// way of saying "nothing further to say" (e.g. after a side-effect-only tool
+    /// call). It stays a clean placeholder and must NOT enter the retryable
+    /// empty-completion class, or a finished turn would be retried.
+    #[test]
+    fn anthropic_end_turn_empty_content_is_not_an_empty_completion() {
+        let body = serde_json::json!({
+            "content": [],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 0}
+        });
+
+        parse_anthropic_response(body).expect("end_turn placeholder must parse");
     }
 
     /// R4: tool definitions must serialize in a deterministic, name-sorted
@@ -5426,8 +5502,78 @@ mod tests {
         });
 
         let error = parse_openai_response(body, "OpenRouter").expect_err("should fail");
-        assert!(error.to_string().contains("empty response from OpenRouter"));
-        assert!(error.to_string().contains("finish_reason: stop"));
+        let message = error.to_string();
+        assert!(message.contains(crate::llm::routing::EMPTY_COMPLETION_MARKER));
+        assert!(message.contains("OpenRouter"));
+        assert!(message.contains("HTTP 2xx"));
+        assert!(message.contains("finish_reason: stop"));
+        assert!(crate::llm::routing::is_retriable_error(&message));
+    }
+
+    #[test]
+    fn parse_openai_response_without_choices_is_a_retriable_empty_completion() {
+        let body = serde_json::json!({ "usage": {} });
+
+        let error = parse_openai_response(body, "OpenRouter").expect_err("should fail");
+        let message = error.to_string();
+        assert!(message.contains(crate::llm::routing::EMPTY_COMPLETION_MARKER));
+        assert!(message.contains("missing choices array"));
+        assert!(crate::llm::routing::is_retriable_error(&message));
+    }
+
+    /// A tool-call-only reply carries `"content": null` by convention. It is a
+    /// complete, valid turn and must never be reclassified as an empty response,
+    /// or every tool call would be retried instead of executed.
+    #[test]
+    fn parse_openai_response_tool_call_only_is_not_empty() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": serde_json::Value::Null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "reply",
+                            "arguments": "{\"content\":\"hi\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 7, "completion_tokens": 3 }
+        });
+
+        parse_openai_response(body, "OpenRouter").expect("tool-call-only reply must parse");
+    }
+
+    /// The "[DONE] reached cleanly with nothing in it" case: the stream is
+    /// well-formed and terminated, but carried no text and no tool-call deltas.
+    #[test]
+    fn parse_openai_chat_sse_empty_stream_is_a_retriable_empty_completion() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let error = parse_openai_chat_sse_response(sse, "OpenRouter").expect_err("should fail");
+        let message = error.to_string();
+        assert!(message.contains(crate::llm::routing::EMPTY_COMPLETION_MARKER));
+        assert!(crate::llm::routing::is_retriable_error(&message));
+    }
+
+    /// The stream counterpart of the tool-call-only guard above.
+    #[test]
+    fn parse_openai_chat_sse_tool_call_deltas_are_not_empty() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"reply\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let parsed =
+            parse_openai_chat_sse_response(sse, "OpenRouter").expect("tool-call stream must parse");
+        assert!(parsed["choices"][0]["message"]["tool_calls"].is_array());
     }
 
     #[test]
