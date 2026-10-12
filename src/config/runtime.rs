@@ -485,9 +485,13 @@ mod tests {
         llm_manager.note_resolved_context_window(&resolved_channel_model(&config), 262_144);
         runtime_config.set_llm_manager(llm_manager.clone());
 
-        // Startup propagation adopts the resolved window, and a reload
-        // triggered by an unrelated edit keeps it.
-        assert_eq!(runtime_config.apply_discovered_context_window(&llm_manager), Some(262_144));
+        // Startup propagation adopts the resolved window...
+        assert_eq!(
+            runtime_config.apply_discovered_context_window(&llm_manager),
+            Some(262_144)
+        );
+
+        // ...and a reload triggered by an unrelated edit keeps it.
         runtime_config.publish_config(&config, &agent_id);
         assert_eq!(
             **runtime_config.context_window.load(),
