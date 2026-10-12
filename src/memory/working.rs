@@ -1096,10 +1096,51 @@ fn format_event_line(event: &WorkingMemoryEvent, current_channel_id: &str) -> St
         _ => String::new(),
     };
 
+    // The label leads the line, but only when the summary does not already
+    // carry it: some event sites store their own label in the text ("Worker
+    // completed: Done. …"), and prepending it again rendered
+    // "Worker completed: Worker completed: Done. …". The dedupe runs before
+    // the bound, so the character budget is spent on the text rather than on a
+    // repeated label.
+    let body = if opens_with_label(&event.summary, type_label) {
+        event.summary.trim_start().to_string()
+    } else {
+        format!("{type_label}: {}", event.summary)
+    };
+
     // The line is bounded: a summary that is a pasted brief renders as one
     // bounded entry with the cut marked, never as paragraphs. The stored
     // summary is untouched.
-    bound_rendered_entry(&format!("{channel_prefix}{type_label}: {}", event.summary))
+    bound_rendered_entry(&format!("{channel_prefix}{body}"))
+}
+
+/// Whether `text` already opens with its own `label`.
+///
+/// The event sites are not uniform: some store a bare summary and some store
+/// the label inside the text ("Worker completed: Done. 1b71b123 is on main.").
+/// Both have to render as one labelled line, so the render asks first.
+///
+/// Matching ignores case and tolerates whitespace before the label. The colon
+/// is required, which keeps the dedupe narrow: a summary that merely opens with
+/// the same word it is labelled by ("Error while compiling" under an `Error`
+/// label) still gets its label, since that text is not a label already.
+fn opens_with_label(text: &str, label: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = strip_prefix_ignore_case(trimmed, label) else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    rest.is_empty() || rest.starts_with(':')
+}
+
+/// [`str::strip_prefix`] without the case requirement.
+///
+/// A label that does not land on a character boundary yields `None`, so
+/// multi-byte text cannot panic the comparison.
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
 }
 
 /// How much of an event the render could afford.
@@ -2613,5 +2654,85 @@ mod tests {
         // Different channel — prefix with channel ID.
         let line = format_event_line(&event, "chan-2");
         assert_eq!(line, "[chan-1] Worker completed: Built the project");
+    }
+
+    /// The production rendering bug: a summary that already carries its own
+    /// label must not be labelled twice.
+    #[test]
+    fn test_format_event_line_does_not_repeat_a_label_the_summary_carries() {
+        let event = WorkingMemoryEvent {
+            id: "test".to_string(),
+            event_type: WorkingMemoryEventType::WorkerCompleted,
+            timestamp: Utc::now(),
+            channel_id: Some("chan-1".to_string()),
+            user_id: None,
+            summary: "Worker completed: Done. 1b71b123 is on main.".to_string(),
+            detail: None,
+            importance: 0.6,
+            day: "2026-03-18".to_string(),
+        };
+
+        assert_eq!(
+            format_event_line(&event, "chan-1"),
+            "Worker completed: Done. 1b71b123 is on main."
+        );
+        // The channel prefix still applies to the deduped line.
+        assert_eq!(
+            format_event_line(&event, "chan-2"),
+            "[chan-1] Worker completed: Done. 1b71b123 is on main."
+        );
+    }
+
+    /// The dedupe keys on the label, not on a word that happens to open the
+    /// text: "Error while compiling" is a summary, not a stored label, so it
+    /// keeps one.
+    #[test]
+    fn test_format_event_line_labels_a_summary_that_only_opens_like_its_label() {
+        let event = WorkingMemoryEvent {
+            id: "test".to_string(),
+            event_type: WorkingMemoryEventType::Error,
+            timestamp: Utc::now(),
+            channel_id: Some("chan-1".to_string()),
+            user_id: None,
+            summary: "Error while compiling".to_string(),
+            detail: None,
+            importance: 0.6,
+            day: "2026-03-18".to_string(),
+        };
+
+        assert_eq!(
+            format_event_line(&event, "chan-1"),
+            "Error: Error while compiling"
+        );
+    }
+
+    /// The dedupe runs before the bound, so a self-labelled summary spends the
+    /// character budget on the text rather than on a repeated label.
+    #[test]
+    fn test_format_event_line_dedupes_before_bounding() {
+        let event = WorkingMemoryEvent {
+            id: "test".to_string(),
+            event_type: WorkingMemoryEventType::WorkerCompleted,
+            timestamp: Utc::now(),
+            channel_id: Some("chan-1".to_string()),
+            user_id: None,
+            summary: format!("Worker completed: {}", "paste ".repeat(120)),
+            detail: None,
+            importance: 0.6,
+            day: "2026-03-18".to_string(),
+        };
+
+        let line = format_event_line(&event, "chan-1");
+        assert!(
+            line.chars().count() <= RENDERED_ENTRY_MAX_CHARS,
+            "a bounded entry must fit the budget, got {} chars",
+            line.chars().count()
+        );
+        assert_eq!(
+            line.matches("Worker completed:").count(),
+            1,
+            "the label must appear exactly once, got {line}"
+        );
+        assert!(line.ends_with('…'), "a cut line marks the cut, got {line}");
     }
 }
