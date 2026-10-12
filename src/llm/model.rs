@@ -3494,16 +3494,21 @@ fn parse_streamed_tool_arguments(
                 return Ok(arguments);
             }
             Err(sanitized_parse_error) => {
-                return Err(CompletionError::ProviderError(format!(
-                    "invalid streamed tool arguments for '{tool_name}': {direct_parse_error}; after sanitization: {sanitized_parse_error}"
-                )));
+                return Err(CompletionError::ProviderError(
+                    routing::malformed_tool_args_message(
+                        tool_name,
+                        &format!(
+                            "{direct_parse_error}; after sanitization: {sanitized_parse_error}"
+                        ),
+                    ),
+                ));
             }
         }
     }
 
-    Err(CompletionError::ProviderError(format!(
-        "invalid streamed tool arguments for '{tool_name}': {direct_parse_error}"
-    )))
+    Err(CompletionError::ProviderError(
+        routing::malformed_tool_args_message(tool_name, &direct_parse_error.to_string()),
+    ))
 }
 
 fn flush_openai_streaming_tool_calls(
@@ -6007,6 +6012,45 @@ mod tests {
                 .to_string()
                 .contains("invalid streamed tool arguments for 'file'"),
             "unexpected error: {error}"
+        );
+        // The producer phrase is exactly what the retry classifier keys on: a
+        // truncated tool call is retried — nothing executed, because the
+        // arguments never parsed — instead of failing the turn.
+        assert!(
+            crate::llm::routing::is_retriable_error(&error.to_string()),
+            "truncated streamed tool arguments must be retriable: {error}"
+        );
+    }
+
+    #[test]
+    fn flush_openai_streaming_tool_calls_truncated_arguments_stay_retriable_after_sanitization() {
+        // A raw control character makes the sanitizer run; the arguments are
+        // still truncated, so the second producer site emits the class.
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            0,
+            OpenAiStreamingToolCall {
+                id: "call_1".to_string(),
+                internal_call_id: "internal_1".to_string(),
+                name: "shell".to_string(),
+                arguments: "{\"command\":\"ls\u{0001}".to_string(),
+            },
+        );
+
+        let error = flush_openai_streaming_tool_calls(&mut pending)
+            .expect_err("truncated JSON arguments should error");
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid streamed tool arguments for 'shell'"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("after sanitization"),
+            "expected the sanitized attempt to be reported: {message}"
+        );
+        assert!(
+            crate::llm::routing::is_retriable_error(&message),
+            "truncated tool arguments must stay retriable after sanitization: {message}"
         );
     }
 

@@ -138,6 +138,33 @@ pub fn empty_completion_message(provider_label: &str, http_note: &str, detail: &
     format!("{provider_label} {EMPTY_COMPLETION_MARKER} ({http_note}, {detail})")
 }
 
+/// Marker for a tool call whose argument JSON did not survive the provider's
+/// stream — in practice a chunk boundary landing inside a string, so the
+/// reassembled arguments are truncated and `serde_json` reports the position:
+/// `invalid streamed tool arguments for 'shell': EOF while parsing a string at
+/// line 1 column 80`.
+///
+/// This is a wire-level failure, not a validation one: the JSON never parsed, so
+/// the call never executed and the whole request is safe to re-send from scratch.
+/// Semantic validation failures — an unknown tool id, a missing required field,
+/// an argument of the wrong type — happen *after* a successful parse, are
+/// produced by different sites, and do not carry this phrase; they stay fatal,
+/// because a resend reproduces the same rejection.
+///
+/// Every producer of this class goes through [`malformed_tool_args_message`], so
+/// the phrase and the classification below cannot drift apart.
+pub const TRUNCATED_TOOL_ARGS_MARKER: &str = "invalid streamed tool arguments";
+
+/// Build the canonical truncated-tool-arguments error text.
+///
+/// `detail` carries the `serde_json` position report — plus, when the control
+/// character sanitizer ran and still failed, that second report. The message
+/// names the tool and never an HTTP status, so it reads distinctly from a 5xx in
+/// logs and cache_stats attribution.
+pub fn malformed_tool_args_message(tool_name: &str, detail: &str) -> String {
+    format!("{TRUNCATED_TOOL_ARGS_MARKER} for '{tool_name}': {detail}")
+}
+
 /// Whether a completion error message indicates a retriable failure.
 pub fn is_retriable_error(error_message: &str) -> bool {
     let lower = error_message.to_lowercase();
@@ -165,6 +192,12 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         || lower.contains(EMPTY_COMPLETION_MARKER)
         // Older phrasing still emitted by the OpenAI chat SSE reconstruction.
         || lower.contains("did not contain message content or tool calls")
+        // Tool-call arguments truncated in the provider's stream. The JSON never
+        // parsed, so the call never executed and the identical request can be
+        // re-sent. Semantic validation failures (unknown tool, missing field,
+        // wrong argument type) are produced after a successful parse and do not
+        // carry this phrase, so they stay fatal.
+        || lower.contains(TRUNCATED_TOOL_ARGS_MARKER)
         || lower.contains("failed to read response body")
         || lower.contains("error decoding response body")
         // SSE stream cut off before its terminal event
@@ -737,6 +770,36 @@ mod tests {
         assert!(is_retriable_error("empty response"));
         assert!(is_retriable_error("failed to read response body"));
         assert!(is_retriable_error("error decoding response body"));
+    }
+
+    #[test]
+    fn is_retriable_error_catches_truncated_streamed_tool_arguments() {
+        // The truncation that failed five turns in one day, across shell,
+        // memory_save and branch surfaces: the provider cut the tool-call
+        // argument JSON mid-string, so the call never executed.
+        assert!(is_retriable_error(
+            "ProviderError: invalid streamed tool arguments for 'shell': EOF while parsing a string at line 1 column 80"
+        ));
+        assert!(is_retriable_error(
+            "ProviderError: invalid streamed tool arguments for 'memory_save': EOF while parsing a string at line 1 column 1816; after sanitization: expected `,` or `}` at line 1 column 1816"
+        ));
+        // Classification keys on our own stable phrase, not on the serde wording
+        // underneath it, which varies with where the stream was cut.
+        assert!(is_retriable_error(TRUNCATED_TOOL_ARGS_MARKER));
+    }
+
+    #[test]
+    fn is_retriable_error_rejects_semantic_tool_argument_failures() {
+        // These parse fine and are rejected by validation afterwards. They come
+        // from a different producer, and a resend reproduces the same rejection,
+        // so they must stay fatal.
+        assert!(!is_retriable_error(
+            "tool 'memory_save' rejected its arguments: missing field `content`"
+        ));
+        assert!(!is_retriable_error("unknown tool: memorysave"));
+        assert!(!is_retriable_error(
+            "tool arguments failed schema validation"
+        ));
     }
 
     #[test]
