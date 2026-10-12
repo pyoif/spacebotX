@@ -165,6 +165,28 @@ pub fn malformed_tool_args_message(tool_name: &str, detail: &str) -> String {
     format!("{TRUNCATED_TOOL_ARGS_MARKER} for '{tool_name}': {detail}")
 }
 
+/// Marker for a stream that failed at the transport level after the provider had
+/// already accepted the request: the body could not be read or decoded to its end
+/// — a decode error, a connection dropped mid-chunk, an HTTP body that ended
+/// early. Nothing executed, the next attempt builds the request from scratch, so
+/// the whole class is retriable.
+///
+/// Classification keys on this phrase rather than on the HTTP client's wording
+/// underneath it, because that wording differs per transport and per error kind
+/// (`error decoding response body`, `unexpected EOF during chunk size line`, …).
+/// Every producer of the class goes through [`stream_read_failed_message`], so
+/// the phrase and the classification below cannot drift apart.
+pub const STREAM_READ_FAILED_MARKER: &str = "stream read failed";
+
+/// Build the canonical transport-stream-failure error text.
+///
+/// `detail` carries whatever the transport reported for the failure itself; the
+/// marker prefix is what the classifier matches on, so a never-before-seen
+/// wording still lands in the retriable class.
+pub fn stream_read_failed_message(provider_label: &str, detail: impl std::fmt::Display) -> String {
+    format!("{provider_label} {STREAM_READ_FAILED_MARKER}: {detail}")
+}
+
 /// Whether a completion error message indicates a retriable failure.
 pub fn is_retriable_error(error_message: &str) -> bool {
     let lower = error_message.to_lowercase();
@@ -198,6 +220,16 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         // wrong argument type) are produced after a successful parse and do not
         // carry this phrase, so they stay fatal.
         || lower.contains(TRUNCATED_TOOL_ARGS_MARKER)
+        // Transport-level stream failure: the provider answered, then the body
+        // could not be read or decoded to its end. Keyed on our own marker so the
+        // class holds regardless of which phrasing the HTTP client produced
+        // underneath it, plus the common client wordings for a stream that ended
+        // early.
+        || lower.contains(STREAM_READ_FAILED_MARKER)
+        || lower.contains("unexpected eof")
+        || lower.contains("premature end")
+        || lower.contains("incomplete message")
+        || lower.contains("body ends prematurely")
         || lower.contains("failed to read response body")
         || lower.contains("error decoding response body")
         // SSE stream cut off before its terminal event
@@ -786,6 +818,36 @@ mod tests {
         // Classification keys on our own stable phrase, not on the serde wording
         // underneath it, which varies with where the stream was cut.
         assert!(is_retriable_error(TRUNCATED_TOOL_ARGS_MARKER));
+    }
+
+    #[test]
+    fn is_retriable_error_catches_transport_stream_read_failures() {
+        // Observed in production on the channel surface: the provider accepted
+        // the request, then the body failed to decode mid-stream.
+        assert!(is_retriable_error(
+            "ProviderError: Jerouter V2 stream read failed: error decoding response body"
+        ));
+        // The marker carries the class even when the transport's own wording
+        // underneath is one we have never seen before.
+        assert!(is_retriable_error(&stream_read_failed_message(
+            "Jerouter V2",
+            "unexpected EOF during chunk size line"
+        )));
+        assert!(is_retriable_error(
+            "ProviderError: stream read failed: incomplete message"
+        ));
+        // Streams that ended early without our marker in the text.
+        assert!(is_retriable_error("body ends prematurely"));
+        assert!(is_retriable_error("premature end of stream"));
+    }
+
+    #[test]
+    fn is_retriable_error_keeps_client_errors_fatal() {
+        // A rejected request stays fatal: a resend reproduces the rejection.
+        assert!(!is_retriable_error(
+            "400 Bad Request: malformed request body"
+        ));
+        assert!(!is_retriable_error("401 Unauthorized: invalid api key"));
     }
 
     #[test]

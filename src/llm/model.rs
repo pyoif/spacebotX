@@ -5,6 +5,7 @@ use crate::config::{ApiType, ProviderConfig};
 use crate::llm::manager::LlmManager;
 use crate::llm::routing::{
     self, MAX_FALLBACK_ATTEMPTS, MAX_RETRIES_PER_MODEL, RoutingConfig, retry_delay_ms,
+    stream_read_failed_message,
 };
 
 use futures::StreamExt as _;
@@ -75,7 +76,7 @@ where
 {
     match tokio::time::timeout(timeout, stream.next()).await {
         Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
-        Ok(Some(Err(error))) => Some(Err(format!("{provider_label} stream read failed: {error}"))),
+        Ok(Some(Err(error))) => Some(Err(stream_read_failed_message(provider_label, &error))),
         Ok(None) => None,
         Err(_) => Some(Err(format!(
             "{provider_label} stream stalled: no data for {}s (read timeout)",
