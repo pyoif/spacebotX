@@ -105,6 +105,37 @@ pub(crate) fn stable_tool_definitions(
     ordered
 }
 
+/// Who owns the cache-usage line for one call.
+///
+/// Every non-streaming OpenAI-shaped call is implemented as a stream collected
+/// internally — `call_openai_compatible` opens `stream_openai_compatible` and
+/// drains it — so one response passes through both the streaming usage hook and
+/// the non-streaming `completion()`. Logging in both wrote two lines ~100µs
+/// apart carrying identical usage, the second with a zero gap: that doubled
+/// every branch and cortex request in production, and halved every gap the
+/// audit was supposed to read.
+///
+/// The fix is not a dedupe in the log but a decision at the entry point that
+/// owns the whole request, because that is the only layer that knows whether
+/// the stream is the real response or an implementation detail of a collected
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UsageLog {
+    /// A real stream (`dispatch_stream`): the generator is the only place the
+    /// assembled body is visible, so the streaming hook logs.
+    Stream,
+    /// A non-streaming call that collects a stream: `completion()` logs the
+    /// same body once it is assembled, so the hook stays quiet.
+    Caller,
+}
+
+impl UsageLog {
+    /// Whether the streaming hook should write the line.
+    fn hook_logs(self) -> bool {
+        matches!(self, UsageLog::Stream)
+    }
+}
+
 /// Raw provider response. Wraps the JSON so Rig can carry it through.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawResponse {
@@ -1511,7 +1542,10 @@ impl SpacebotModel {
         self.maybe_resolve_context_window(&provider_config).await;
 
         match provider_config.api_type {
-            ApiType::OpenAiCompletions => self.stream_openai(request, &provider_config).await,
+            ApiType::OpenAiCompletions => {
+                self.stream_openai(request, &provider_config, UsageLog::Stream)
+                    .await
+            }
             ApiType::OpenAiChatCompletions => {
                 let endpoint =
                     routing::build_endpoint(&provider_config.base_url, "/chat/completions");
@@ -1530,6 +1564,7 @@ impl SpacebotModel {
                     &endpoint,
                     Some(provider_config.api_key.clone()),
                     &headers,
+                    UsageLog::Stream,
                 )
                 .await
             }
@@ -1606,6 +1641,7 @@ impl SpacebotModel {
                     &endpoint,
                     None,
                     &headers,
+                    UsageLog::Stream,
                 )
                 .await
             }
@@ -1621,12 +1657,18 @@ impl SpacebotModel {
                         ("HTTP-Referer", "https://github.com/spacedriveapp/spacebot"),
                         ("X-Title", "spacebot"),
                     ],
+                    UsageLog::Stream,
                 )
                 .await
             }
             ApiType::Gemini => {
-                self.stream_openai_compatible(request, "Google Gemini", &provider_config)
-                    .await
+                self.stream_openai_compatible(
+                    request,
+                    "Google Gemini",
+                    &provider_config,
+                    UsageLog::Stream,
+                )
+                .await
             }
             ApiType::Anthropic => {
                 // Anthropic has no incremental streaming path here: the "stream"
@@ -1716,7 +1758,9 @@ impl SpacebotModel {
         request: CompletionRequest,
         provider_config: &ProviderConfig,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
-        let stream = self.stream_openai(request, provider_config).await?;
+        let stream = self
+            .stream_openai(request, provider_config, UsageLog::Caller)
+            .await?;
         collect_streaming_completion_response(stream).await
     }
 
@@ -1724,6 +1768,7 @@ impl SpacebotModel {
         &self,
         request: CompletionRequest,
         provider_config: &ProviderConfig,
+        usage_log: UsageLog,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
         let api_key = provider_config.api_key.as_str();
         let provider_label = provider_config
@@ -1816,6 +1861,7 @@ impl SpacebotModel {
             },
             body,
             &provider_label,
+            usage_log,
         )
         .await
     }
@@ -2183,7 +2229,7 @@ impl SpacebotModel {
                     }
                 };
 
-                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
+                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, UsageLog::Stream).await;
                 yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                     body: response_body,
                     usage: Some(parsed_response.usage),
@@ -2216,7 +2262,7 @@ impl SpacebotModel {
             if let Some(message_id) = parsed_response.message_id {
                 yield Ok(RawStreamingChoice::MessageId(message_id));
             }
-            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
+            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, UsageLog::Stream).await;
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: response_body,
                 usage: Some(parsed_response.usage),
@@ -2236,7 +2282,12 @@ impl SpacebotModel {
         provider_config: &ProviderConfig,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
         let stream = self
-            .stream_openai_compatible(request, provider_display_name, provider_config)
+            .stream_openai_compatible(
+                request,
+                provider_display_name,
+                provider_config,
+                UsageLog::Caller,
+            )
             .await?;
         collect_streaming_completion_response(stream).await
     }
@@ -2246,6 +2297,7 @@ impl SpacebotModel {
         request: CompletionRequest,
         provider_display_name: &str,
         provider_config: &ProviderConfig,
+        usage_log: UsageLog,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
         // The configured base URL is authoritative, so every OpenAI-shaped API
         // type appends only the resource path — `/v1` comes from the base URL
@@ -2335,6 +2387,7 @@ impl SpacebotModel {
             },
             body,
             provider_display_name,
+            usage_log,
         )
         .await
     }
@@ -2360,6 +2413,7 @@ impl SpacebotModel {
                 endpoint,
                 api_key,
                 extra_headers,
+                UsageLog::Caller,
             )
             .await?;
         collect_streaming_completion_response(stream).await
@@ -2372,6 +2426,7 @@ impl SpacebotModel {
         endpoint: &str,
         api_key: Option<String>,
         extra_headers: &[(&str, &str)],
+        usage_log: UsageLog,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
         let mut messages = Vec::new();
 
@@ -2445,6 +2500,7 @@ impl SpacebotModel {
             },
             body,
             provider_display_name,
+            usage_log,
         )
         .await
     }
@@ -2530,6 +2586,7 @@ impl SpacebotModel {
         mut build_request: F,
         request_body: serde_json::Value,
         provider_label: &str,
+        usage_log: UsageLog,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError>
     where
         F: FnMut(&serde_json::Value) -> reqwest::RequestBuilder,
@@ -2672,7 +2729,7 @@ impl SpacebotModel {
                     }
                 };
 
-                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
+                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, usage_log).await;
                 yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                     body: response_body,
                     usage: Some(parsed_response.usage),
@@ -2706,7 +2763,7 @@ impl SpacebotModel {
                 yield Ok(RawStreamingChoice::MessageId(message_id));
             }
 
-            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface).await;
+            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, usage_log).await;
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: response_body,
                 usage: Some(parsed_response.usage),
@@ -2725,16 +2782,20 @@ async fn record_streaming_usage(
     model_name: &str,
     provider: &str,
     surface: &str,
+    usage_log: UsageLog,
 ) {
-    // R7-lite: streaming is where the channel's tokens come from, so the cache
-    // outcome is logged here — the one point every streaming provider's final
-    // usage block passes through. Unlike the non-streaming path this is the
-    // only place the body is visible, so it is logged unconditionally.
-    crate::llm::cache_stats::record(
-        surface,
-        model_name,
-        crate::llm::cache_stats::CacheUsage::from_body(provider, body),
-    );
+    // R7-lite: a real stream is where the channel's tokens come from, and its
+    // final usage block is visible nowhere else, so the hook logs it here. A
+    // non-streaming call that collected one of these streams is logged once by
+    // `completion()` instead — see [`UsageLog`] — because the same body
+    // reaching both sites wrote two identical lines per request.
+    if usage_log.hook_logs() {
+        crate::llm::cache_stats::record(
+            surface,
+            model_name,
+            crate::llm::cache_stats::CacheUsage::from_body(provider, body),
+        );
+    }
 
     if let Some(acc) = accumulator {
         let extended = if provider == "anthropic" {
@@ -6383,5 +6444,23 @@ mod stream_stall_tests {
 
         unsafe { std::env::remove_var(key) };
         assert_eq!(stream_stall_timeout(), default);
+    }
+
+    /// The double-emission bug this closed: a non-streaming OpenAI-shaped call
+    /// is a stream collected internally, so the streaming hook and
+    /// `completion()` both saw the same body — two cache-stats lines ~100µs
+    /// apart carrying identical usage, the second with a zero gap (measured in
+    /// production: every branch and cortex request).
+    ///
+    /// Exactly one site may log per call, and the entry point that owns the
+    /// whole request decides which. `hook_logs` is that decision, so this test
+    /// pins the contract both sides rely on.
+    #[test]
+    fn only_a_true_stream_logs_from_the_streaming_hook() {
+        assert!(UsageLog::Stream.hook_logs());
+        assert!(
+            !UsageLog::Caller.hook_logs(),
+            "a collected stream is logged once by completion(), never by the hook"
+        );
     }
 }
