@@ -6366,9 +6366,7 @@ mod context_trim_tests {
 
 #[cfg(test)]
 mod stream_stall_tests {
-    use super::{
-        STREAM_STALL_TIMEOUT_SECS, UsageLog, next_chunk_with_stall_timeout, stream_stall_timeout,
-    };
+    use super::{STREAM_STALL_TIMEOUT_SECS, next_chunk_with_stall_timeout, stream_stall_timeout};
 
     /// A stream that opens and then never yields is the exact shape that used to
     /// hold an agent turn open until the 30-minute whole-request timeout: no
@@ -6447,6 +6445,11 @@ mod stream_stall_tests {
         unsafe { std::env::remove_var(key) };
         assert_eq!(stream_stall_timeout(), default);
     }
+}
+
+#[cfg(test)]
+mod usage_logging_tests {
+    use super::UsageLog;
 
     /// The double-emission bug this closed: a non-streaming OpenAI-shaped call
     /// is a stream collected internally, so the streaming hook and
