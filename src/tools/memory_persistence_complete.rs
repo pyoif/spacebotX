@@ -112,7 +112,9 @@ pub struct WorkingMemoryEventInput {
     /// Event type: "decision", "user_correction", "decision_revised", "deadline_set",
     /// "blocked_on", "constraint", "outcome", "error", or "system".
     pub event_type: String,
-    /// One-line summary of the event.
+    /// One-line summary of the event, in the extractor's own words — never a
+    /// verbatim quote of a message, task brief, or tool output. Bounded so the
+    /// working memory entry stays an entry.
     pub summary: String,
     /// Importance score (0.0-1.0). Defaults to 0.5.
     #[serde(default = "default_importance")]
@@ -182,7 +184,7 @@ impl Tool for MemoryPersistenceCompleteTool {
                                 },
                                 "summary": {
                                     "type": "string",
-                                    "description": "One-line summary of the event"
+                                    "description": "One-line summary of the event in your own words. Never quote a message, task brief, worker prompt, or tool output verbatim, and keep it under 50 words."
                                 },
                                 "importance": {
                                     "type": "number",

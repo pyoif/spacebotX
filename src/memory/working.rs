@@ -536,6 +536,47 @@ fn estimate_tokens(text: &str) -> usize {
     text.len() / 4
 }
 
+/// The most any single rendered entry may occupy, in characters.
+///
+/// The store keeps the full text — only the render is bounded. A summary that
+/// is a pasted task brief therefore costs one bounded line instead of
+/// paragraphs, which is what keeps a spawn event or a long verbatim quote from
+/// bloating the block. Truncation is by `char`, never by byte, so multi-byte
+/// text cannot panic, and it never changes what the disclosure counts: an entry
+/// is bounded, not dropped.
+const RENDERED_ENTRY_MAX_CHARS: usize = 240;
+
+/// Bound one rendered entry to [`RENDERED_ENTRY_MAX_CHARS`].
+fn bound_rendered_entry(text: &str) -> String {
+    bound_chars(text, RENDERED_ENTRY_MAX_CHARS)
+}
+
+/// Bound `text` to `max_chars`, cutting on a word boundary and marking the cut
+/// with an ellipsis, which counts toward the limit.
+///
+/// Text that already fits is returned unchanged, so a healthy entry is never
+/// touched and no ellipsis appears where nothing was removed. The boundary is
+/// only used when one exists at or before the limit; a single unbroken token
+/// still bounds. Cutting is by `char`, so multi-byte text cannot panic.
+fn bound_chars(text: &str, max_chars: usize) -> String {
+    let limit = max_chars.max(1);
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+
+    // Reserve one character for the ellipsis, then prefer the last word
+    // boundary inside what is left so a cut never leaves half a word.
+    let head: String = text.chars().take(limit - 1).collect();
+    let cut = match head.rfind(char::is_whitespace) {
+        Some(index) if index > 0 => head[..index].chars().count(),
+        _ => limit - 1,
+    };
+
+    let mut bounded: String = text.chars().take(cut).collect();
+    bounded.push('…');
+    bounded
+}
+
 /// Render Layer 2: Working Memory section for the channel system prompt.
 ///
 /// Produces a markdown block with today's raw event tail, today's intra-day
@@ -681,7 +722,9 @@ pub async fn render_working_memory(
 
     // 2. The day's syntheses then take what the raw events left. When they no
     // longer fit, they merge into one digest paragraph, so the events they cover
-    // stay represented at a coarser grain instead of disappearing.
+    // stay represented at a coarser grain instead of disappearing. Each
+    // paragraph is bounded, so one long synthesis cannot spend the day on its
+    // own verbosity — a synth paragraph is also cut, not the store.
     let mut syntheses_rendered = 0usize;
     for synthesis in &syntheses {
         let time_label = synthesis
@@ -689,7 +732,8 @@ pub async fn render_working_memory(
             .with_timezone(&timezone)
             .format("%H:%M")
             .to_string();
-        let block = format!("[{time_label}] {}\n", synthesis.summary);
+        let bounded = bound_rendered_entry(&synthesis.summary);
+        let block = format!("[{time_label}] {bounded}\n");
         let block_tokens = estimate_tokens(&block);
         if tokens_used + block_tokens > today_budget {
             break;
@@ -1052,7 +1096,10 @@ fn format_event_line(event: &WorkingMemoryEvent, current_channel_id: &str) -> St
         _ => String::new(),
     };
 
-    format!("{channel_prefix}{type_label}: {}", event.summary)
+    // The line is bounded: a summary that is a pasted brief renders as one
+    // bounded entry with the cut marked, never as paragraphs. The stored
+    // summary is untouched.
+    bound_rendered_entry(&format!("{channel_prefix}{type_label}: {}", event.summary))
 }
 
 /// How much of an event the render could afford.
@@ -1074,26 +1121,27 @@ enum EventGranularity {
 /// The trimmed form used when the day's budget cannot afford a full line.
 ///
 /// The event's label is kept, so a degraded line stays identifiable as the same
-/// kind of event it always was; only the summary is cut. Truncation is by
-/// `char`, so a summary full of multi-byte text cannot panic.
+/// kind of event it always was; only the summary is cut, on a word boundary and
+/// with the cut marked. Truncation is by `char`, so a summary full of multi-byte
+/// text cannot panic.
 fn format_event_one_liner(event: &WorkingMemoryEvent, current_channel_id: &str) -> String {
     const MAX_CHARS: usize = 80;
-    let full = format_event_line(event, current_channel_id);
-    if full.chars().count() <= MAX_CHARS {
-        return full;
-    }
-    let mut trimmed: String = full.chars().take(MAX_CHARS - 1).collect();
-    trimmed.push('…');
-    trimmed
+    bound_chars(&format_event_line(event, current_channel_id), MAX_CHARS)
 }
 
 /// Merge syntheses that no longer fit the day budget into one digest paragraph.
 ///
 /// Dropping them would leave the events they cover with no representation at
 /// all, so the paragraph is bounded instead: each synthesis keeps its time label
-/// and the head of its summary, and the whole paragraph is capped.
+/// and the head of its summary, and the whole paragraph is capped. Every cut
+/// lands on a word boundary and is marked with an ellipsis: a head ending
+/// mid-word (`output-token audit, co ·`) reads as corruption rather than as a
+/// summary that was trimmed.
 fn render_synthesis_digest(syntheses: &[IntradaySynthesis], timezone: &chrono_tz::Tz) -> String {
-    const MAX_CHARS: usize = 1200;
+    // Per-synthesis head inside the digest.
+    const HEAD_MAX_CHARS: usize = 80;
+    // Whole-paragraph bound.
+    const DIGEST_MAX_CHARS: usize = 1200;
     if syntheses.is_empty() {
         return String::new();
     }
@@ -1107,16 +1155,12 @@ fn render_synthesis_digest(syntheses: &[IntradaySynthesis], timezone: &chrono_tz
             .with_timezone(timezone)
             .format("%H:%M")
             .to_string();
-        let head: String = synthesis.summary.chars().take(80).collect();
+        let head = bound_chars(&synthesis.summary, HEAD_MAX_CHARS);
         digest.push_str(&format!("[{time_label}] {head}"));
     }
-    digest.push('\n');
-    if digest.chars().count() > MAX_CHARS {
-        digest = digest.chars().take(MAX_CHARS - 1).collect();
-        digest.push('…');
-        digest.push('\n');
-    }
-    digest
+    let mut bounded = bound_chars(&digest, DIGEST_MAX_CHARS);
+    bounded.push('\n');
+    bounded
 }
 
 /// Fetch the most recent BranchCompleted topic hint per channel.
@@ -2201,6 +2245,244 @@ mod tests {
         assert!(
             !rendered.contains(" covered · "),
             "a day that fits must not disclose coverage\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_render_bounds_a_pasted_brief_without_losing_coverage() {
+        // Regression: a worker-spawn event whose summary was the whole task
+        // brief — instructions, tool syntax and all — rendered verbatim and
+        // bloated the block by paragraphs. The store keeps the brief; the render
+        // bounds it, and the event still counts as covered.
+        let store = setup_test_store().await;
+        let today = store.today();
+        let mut config = test_config();
+        config.context_token_budget = 400; // today budget = 240
+        config.today_max_unsynthesized_events = 1;
+
+        let brief =
+            "Spawned a worker to bound rendered entries: read the file, edit, commit, push. "
+                .repeat(40);
+
+        // Older tail events: they overflow the day, so the disclosure appears.
+        for i in 0..6 {
+            let event = WorkingMemoryEvent {
+                id: Uuid::new_v4().to_string(),
+                event_type: WorkingMemoryEventType::WorkerCompleted,
+                timestamp: Utc::now() - chrono::Duration::minutes(10 - i),
+                channel_id: Some("chan-1".to_string()),
+                user_id: None,
+                summary: format!("Worker {i} finished a short job"),
+                detail: None,
+                importance: 0.6,
+                day: today.clone(),
+            };
+            insert_event(&store.pool, &event).await.unwrap();
+        }
+
+        // The newest event carries the brief, so it keeps a full (bounded) line.
+        let spawn = WorkingMemoryEvent {
+            id: Uuid::new_v4().to_string(),
+            event_type: WorkingMemoryEventType::WorkerSpawned,
+            timestamp: Utc::now(),
+            channel_id: Some("chan-1".to_string()),
+            user_id: None,
+            summary: brief.clone(),
+            detail: None,
+            importance: 0.7,
+            day: today.clone(),
+        };
+        insert_event(&store.pool, &spawn).await.unwrap();
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        let spawn_line = rendered
+            .lines()
+            .find(|line| line.contains("Worker spawned:"))
+            .expect("the spawn event must render");
+        assert!(
+            spawn_line.chars().count() <= RENDERED_ENTRY_MAX_CHARS + 2,
+            "a pasted brief must render as one bounded entry, got {} chars\n{spawn_line}",
+            spawn_line.chars().count()
+        );
+        assert!(
+            spawn_line.ends_with('…'),
+            "the cut must be marked\n{spawn_line}"
+        );
+        assert!(
+            !rendered.contains(&brief),
+            "the brief must never be rendered verbatim"
+        );
+
+        // Nothing was dropped from the store.
+        let stored = store.get_events_for_day(&today).await.unwrap();
+        assert_eq!(stored.len(), 7);
+        assert!(
+            stored.iter().any(|event| event.summary == brief),
+            "the store keeps the full text"
+        );
+
+        // Bounding is not dropping: the disclosure still accounts for every
+        // event of the day, the bounded one included.
+        let (covered, total, grains) = parse_coverage(&rendered).expect("coverage disclosed");
+        assert_eq!(
+            (covered, total),
+            (7, 7),
+            "the bounded event is still covered"
+        );
+        assert_eq!(
+            grains.iter().map(|(count, _)| count).sum::<usize>(),
+            7,
+            "the grains must add up to the day\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_render_bounds_a_long_synthesis_without_losing_coverage() {
+        // The synthesis side of the same bug: one paragraph of pasted narrative
+        // typed out at length. The paragraph renders bounded; the store keeps it
+        // whole; the event counts are untouched because truncation happens at
+        // render time, after the grains are decided.
+        let store = setup_test_store().await;
+        let today = store.today();
+        let mut config = test_config();
+        config.context_token_budget = 400; // today budget = 240
+        config.today_max_unsynthesized_events = 1;
+
+        let long_summary =
+            "Compiled the migration, audited every consumer, and pushed a green build. ".repeat(30);
+        let start = Utc::now() - chrono::Duration::hours(3);
+        let end = Utc::now() - chrono::Duration::hours(2);
+        store
+            .save_intraday_synthesis(&today, start, end, &long_summary, 8)
+            .await
+            .unwrap();
+
+        for i in 0..6 {
+            let event = WorkingMemoryEvent {
+                id: Uuid::new_v4().to_string(),
+                event_type: WorkingMemoryEventType::WorkerCompleted,
+                timestamp: Utc::now() - chrono::Duration::minutes(10 - i),
+                channel_id: Some("chan-1".to_string()),
+                user_id: None,
+                summary: format!("Tail event {i}"),
+                detail: None,
+                importance: 0.6,
+                day: today.clone(),
+            };
+            insert_event(&store.pool, &event).await.unwrap();
+        }
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        let paragraph = rendered
+            .lines()
+            .find(|line| line.starts_with('['))
+            .expect("the synthesis paragraph must render");
+        assert!(
+            paragraph.chars().count() <= RENDERED_ENTRY_MAX_CHARS + 8,
+            "a synthesis paragraph must stay bounded, got {} chars\n{paragraph}",
+            paragraph.chars().count()
+        );
+        assert!(
+            paragraph.ends_with('…'),
+            "the cut must be marked\n{paragraph}"
+        );
+        assert!(
+            !rendered.contains(&long_summary),
+            "the full summary must not be rendered"
+        );
+
+        // The store still holds the whole thing — only the render is bounded.
+        let stored = store.get_intraday_syntheses(&today).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].summary, long_summary);
+
+        let (covered, total, grains) = parse_coverage(&rendered).expect("coverage disclosed");
+        assert_eq!(
+            (covered, total),
+            (6, 6),
+            "counts are independent of truncation"
+        );
+        assert_eq!(grains.iter().map(|(count, _)| count).sum::<usize>(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_render_leaves_a_short_entry_untouched() {
+        // The bound is a backstop, not a haircut: an entry that fits renders
+        // exactly as written, with no ellipsis marking a cut that never happened.
+        let store = setup_test_store().await;
+        let today = store.today();
+        let config = test_config();
+
+        let event = WorkingMemoryEvent {
+            id: Uuid::new_v4().to_string(),
+            event_type: WorkingMemoryEventType::WorkerCompleted,
+            timestamp: Utc::now(),
+            channel_id: Some("chan-1".to_string()),
+            user_id: None,
+            summary: "Built the project".to_string(),
+            detail: None,
+            importance: 0.6,
+            day: today.clone(),
+        };
+        insert_event(&store.pool, &event).await.unwrap();
+
+        let rendered = render_working_memory(&store, "chan-1", &config, Tz::UTC)
+            .await
+            .unwrap();
+
+        assert!(
+            rendered.contains("- Worker completed: Built the project"),
+            "a healthy entry renders exactly as written\n{rendered}"
+        );
+        assert!(
+            !rendered.contains('…'),
+            "nothing was cut, so nothing may be marked as cut\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_synthesis_digest_cuts_its_head_on_a_word_boundary() {
+        // Regression: digest heads were cut at 80 chars with no ellipsis, so an
+        // entry read `output-token audit, co ·` — a half word that reads as
+        // corruption rather than as a trimmed summary.
+        let summary = "discovery-propagation fix; output-token audit completed; \
+                       worker spawn receipts verified across the whole day and more";
+        let syntheses = vec![IntradaySynthesis {
+            id: "s1".to_string(),
+            day: "2026-10-12".to_string(),
+            time_range_start: Utc::now(),
+            time_range_end: Utc::now(),
+            summary: summary.to_string(),
+            event_count: 3,
+            created_at: Utc::now(),
+        }];
+
+        let digest = render_synthesis_digest(&syntheses, &Tz::UTC);
+
+        let head = digest
+            .lines()
+            .next()
+            .and_then(|line| line.split_once("] "))
+            .map(|(_, head)| head.to_string())
+            .expect("the digest renders its head");
+        assert!(head.ends_with('…'), "a cut head must be marked\n{digest}");
+
+        let kept = head.trim_end_matches('…');
+        assert!(kept.chars().count() < 80, "the head must stay bounded");
+        assert!(
+            summary.starts_with(kept),
+            "the head is a prefix of the summary\n{digest}"
+        );
+        let rest = &summary[kept.len()..];
+        assert!(
+            rest.chars().next().is_some_and(char::is_whitespace),
+            "the cut must land on a word boundary, rest started with {rest:?}"
         );
     }
 

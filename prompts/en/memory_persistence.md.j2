@@ -48,7 +48,13 @@ This is an automatic process triggered periodically during conversation. You are
      - `"outcome"` when a task, branch, or delegated step reaches a clear terminal result worth retaining in temporal memory
      - `"error"` for failures or problems
      - `"system"` for other notable events
-   - `summary`: one-line description of what happened
+   - `summary`: one-line description of what happened, in your own words.
+     Never quote a message or paste a task brief, worker prompt, or tool output
+     verbatim, and keep it under 50 words — this one line is what the agent's
+     working memory shows, so a quoted paragraph is a paragraph of bloat.
+     Keep timestamps out of the prose as well: the event's own timestamp is
+     stored separately. Only normalize a relative time reference into the
+     summary when the event is meaningless without it.
    - Normalize relative time references to absolute dates/times with timezone
      (for example `2026-03-31T14:20:00-04:00`) so downstream memory checks are
      stable across sessions.
