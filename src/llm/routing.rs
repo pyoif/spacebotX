@@ -221,15 +221,13 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         // carry this phrase, so they stay fatal.
         || lower.contains(TRUNCATED_TOOL_ARGS_MARKER)
         // Transport-level stream failure: the provider answered, then the body
-        // could not be read or decoded to its end. Keyed on our own marker so the
-        // class holds regardless of which phrasing the HTTP client produced
-        // underneath it, plus the common client wordings for a stream that ended
-        // early.
+        // could not be read or decoded to its end. Classification keys on our own
+        // marker alone — every producer of the class composes its message through
+        // [`stream_read_failed_message`] — so the class holds for transport
+        // wordings we have never seen, while a payload that arrived whole and
+        // failed to parse (no marker) stays fatal, as does a bare `unexpected EOF`
+        // from the parser.
         || lower.contains(STREAM_READ_FAILED_MARKER)
-        || lower.contains("unexpected eof")
-        || lower.contains("premature end")
-        || lower.contains("incomplete message")
-        || lower.contains("body ends prematurely")
         || lower.contains("failed to read response body")
         || lower.contains("error decoding response body")
         // SSE stream cut off before its terminal event
@@ -836,9 +834,11 @@ mod tests {
         assert!(is_retriable_error(
             "ProviderError: stream read failed: incomplete message"
         ));
-        // Streams that ended early without our marker in the text.
-        assert!(is_retriable_error("body ends prematurely"));
-        assert!(is_retriable_error("premature end of stream"));
+        // A payload that arrived whole and failed to parse is a different class:
+        // no marker, so it stays fatal.
+        assert!(!is_retriable_error(
+            "unexpected EOF while parsing payload JSON"
+        ));
     }
 
     #[test]
