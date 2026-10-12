@@ -240,7 +240,7 @@ impl RuntimeConfig {
         llm_manager: &crate::llm::LlmManager,
     ) -> Option<usize> {
         let routing = self.routing.load();
-        let resolved = llm_manager.min_resolved_ceiling(Self::agent_budget_models(&routing))?;
+        let resolved = llm_manager.min_resolved_ceiling(Self::budget_models(&routing))?;
         self.context_window.store(Arc::new(resolved));
         Some(resolved)
     }
@@ -250,7 +250,7 @@ impl RuntimeConfig {
     /// Startup propagation and the reload path must ask about the same set, or a
     /// reload could adopt a window drawn from fewer surfaces than the one it
     /// replaces and quietly resume overrunning the smallest of them.
-    fn agent_budget_models(routing: &RoutingConfig) -> [&str; 5] {
+    fn budget_models(routing: &RoutingConfig) -> [&str; 5] {
         [
             routing.channel.as_str(),
             routing.branch.as_str(),
@@ -316,7 +316,7 @@ impl RuntimeConfig {
                 let manager = self.llm_manager.load();
                 match manager.as_ref() {
                     Some(manager) => {
-                        manager.min_resolved_ceiling(Self::agent_budget_models(&resolved.routing))
+                        manager.min_resolved_ceiling(Self::budget_models(&resolved.routing))
                     }
                     None => None,
                 }
@@ -335,8 +335,7 @@ impl RuntimeConfig {
         self.max_turns.store(Arc::new(resolved.max_turns));
         self.branch_max_turns
             .store(Arc::new(resolved.branch_max_turns));
-        self.context_window
-            .store(Arc::new(reloaded_context_window));
+        self.context_window.store(Arc::new(reloaded_context_window));
         self.tool_use_enforcement
             .store(Arc::new(resolved.tool_use_enforcement.clone()));
         self.max_concurrent_branches
@@ -442,9 +441,7 @@ mod tests {
 
     /// A live runtime config for the first agent of a default instance, the
     /// parsed config the reload path is handed, and that agent's id.
-    fn test_runtime_config(
-        instance_dir: &std::path::Path,
-    ) -> (Arc<RuntimeConfig>, Config, String) {
+    fn runtime_config_for(instance_dir: &Path) -> (Arc<RuntimeConfig>, Config, String) {
         let config = Config::load_from_env(instance_dir).expect("failed to build config");
         let resolved = config
             .resolve_agents()
@@ -464,15 +461,11 @@ mod tests {
         (runtime_config, config, agent_id)
     }
 
-    /// The window this agent's models resolve to, for recording on the manager.
-    fn channel_model(config: &Config) -> String {
-        config
-            .resolve_agents()
-            .into_iter()
-            .next()
-            .expect("missing resolved agent config")
-            .routing
-            .channel
+    /// The channel model this agent routes to, for recording on the manager.
+    fn resolved_channel_model(config: &Config) -> String {
+        let agents = config.resolve_agents();
+        let agent = agents.into_iter().next().expect("missing agent config");
+        agent.routing.channel
     }
 
     /// A reload must not republish the configured placeholder over a window
@@ -485,23 +478,16 @@ mod tests {
     #[tokio::test]
     async fn reload_preserves_a_discovered_context_window() {
         let tempdir = tempfile::tempdir().expect("failed to create tempdir");
-        let (runtime_config, config, agent_id) = test_runtime_config(tempdir.path());
+        let (runtime_config, config, agent_id) = runtime_config_for(tempdir.path());
 
-        let llm_manager = Arc::new(
-            LlmManager::new(config.llm.clone())
-                .await
-                .expect("failed to build llm manager"),
-        );
-        llm_manager.note_resolved_context_window(&channel_model(&config), 262_144);
+        let manager = LlmManager::new(config.llm.clone()).await;
+        let llm_manager = Arc::new(manager.expect("failed to build llm manager"));
+        llm_manager.note_resolved_context_window(&resolved_channel_model(&config), 262_144);
         runtime_config.set_llm_manager(llm_manager.clone());
 
-        // Startup propagation adopts the resolved window...
-        assert_eq!(
-            runtime_config.apply_discovered_context_window(&llm_manager),
-            Some(262_144)
-        );
-
-        // ...and a reload triggered by an unrelated edit keeps it.
+        // Startup propagation adopts the resolved window, and a reload
+        // triggered by an unrelated edit keeps it.
+        assert_eq!(runtime_config.apply_discovered_context_window(&llm_manager), Some(262_144));
         runtime_config.publish_config(&config, &agent_id);
         assert_eq!(
             **runtime_config.context_window.load(),
@@ -515,13 +501,10 @@ mod tests {
     #[tokio::test]
     async fn reload_keeps_the_configured_window_when_nothing_was_resolved() {
         let tempdir = tempfile::tempdir().expect("failed to create tempdir");
-        let (runtime_config, config, agent_id) = test_runtime_config(tempdir.path());
+        let (runtime_config, config, agent_id) = runtime_config_for(tempdir.path());
 
-        let llm_manager = Arc::new(
-            LlmManager::new(config.llm.clone())
-                .await
-                .expect("failed to build llm manager"),
-        );
+        let manager = LlmManager::new(config.llm.clone()).await;
+        let llm_manager = Arc::new(manager.expect("failed to build llm manager"));
         runtime_config.set_llm_manager(llm_manager.clone());
 
         assert_eq!(
