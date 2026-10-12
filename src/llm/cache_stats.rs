@@ -14,7 +14,13 @@
 //! 2. [`tag`] records a mutation event — a memory write, a chronicle write, a
 //!    task transition, a worker spawn. These events rewrite bytes inside the
 //!    cached prefix, so a dip in hit rate cannot be attributed without them.
-//!    Events accumulate and are attached to the *next* recorded request.
+//!    Events accumulate and are attached to the *next* recorded request, and
+//!    they accumulate **per surface**: the memory store, the chronicle anchor
+//!    and the task board are shared, so one write changes the bytes every
+//!    surface renders. A single global slot attributed a write to whichever
+//!    surface happened to request first — in 14h of production data 47
+//!    `memory_write` events reached exactly one channel line, because the
+//!    branch that performed the write consumed the tag first.
 //! 3. [`record`] appends one JSON line per LLM call to
 //!    `<data_dir>/cache_stats.jsonl`, carrying the usage triple, the gap since
 //!    the previous request on the same surface, and the events that landed in
@@ -37,7 +43,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -239,24 +245,46 @@ impl CacheStatsLine {
 /// change than the measurement is worth.
 #[derive(Debug, Default)]
 struct Registry {
-    pending: BTreeMap<String, u32>,
+    /// Events awaiting attribution, **one bucket per surface**.
+    ///
+    /// Per surface rather than one shared slot, because the blocks these
+    /// events rewrite are shared: a memory write changes the store every
+    /// surface renders, so the channel turn whose prompt actually changed must
+    /// carry the tag even when a branch performed the write. A single slot
+    /// handed the whole batch to the first surface to request, which is how 47
+    /// writes produced one tagged channel line.
+    pending: HashMap<String, BTreeMap<String, u32>>,
+    /// Surfaces that have issued at least one request.
+    ///
+    /// A tag fans out to these. Until a surface has requested there is no
+    /// cached prefix for the event to have truncated, so it is not taggable —
+    /// which is why the set is built by observation rather than configuration.
+    known_surfaces: BTreeSet<String>,
     last_request: HashMap<String, DateTime<Utc>>,
 }
 
 impl Registry {
-    /// Note that `label` happened, to be attributed to the next request.
+    /// Note that `label` happened, for every surface's next request.
     fn tag(&mut self, label: &str) {
-        *self.pending.entry(label.to_string()).or_insert(0) += 1;
+        for surface in &self.known_surfaces {
+            *self
+                .pending
+                .entry(surface.clone())
+                .or_default()
+                .entry(label.to_string())
+                .or_insert(0) += 1;
+        }
     }
 
-    /// Take the pending events and report the gap since this surface's last
+    /// Take this surface's pending events and report the gap since its last
     /// request, then remember this request as the newest.
     fn observe(
         &mut self,
         surface: &str,
         now: DateTime<Utc>,
     ) -> (BTreeMap<String, u32>, Option<u64>) {
-        let events = std::mem::take(&mut self.pending);
+        self.known_surfaces.insert(surface.to_string());
+        let events = std::mem::take(self.pending.entry(surface.to_string()).or_default());
         let gap = self
             .last_request
             .insert(surface.to_string(), now)
@@ -299,6 +327,11 @@ pub fn is_enabled() -> bool {
 /// four unrelated subsystems — would dwarf the measurement it carries. It is a
 /// no-op until [`init`] runs, so nothing accumulates in memory before logging
 /// is on.
+///
+/// The event is recorded against **every** surface that has issued a request,
+/// not one shared slot: the memory store, chronicle anchor and task board are
+/// rendered by more than one surface, so a single write legitimately belongs to
+/// several of their next requests.
 pub fn tag(event: CacheEvent) {
     if !is_enabled() {
         return;
@@ -533,19 +566,78 @@ mod tests {
         let mut registry = Registry::default();
         let start = Utc::now();
 
+        // A surface must have issued a request before a tag can reach it:
+        // until then there is no cached prefix the event could have truncated.
+        let (events, gap) = registry.observe("channel", start);
+        assert!(events.is_empty());
+        assert_eq!(gap, None, "the first request on a surface has no gap");
+
         registry.tag(CacheEvent::MemoryWrite.label());
         registry.tag(CacheEvent::MemoryWrite.label());
         registry.tag(CacheEvent::WorkerSpawn.label());
 
-        let (events, gap) = registry.observe("channel", start);
+        let (events, gap) = registry.observe("channel", start + chrono::Duration::seconds(45));
         assert_eq!(events.get("memory_write"), Some(&2));
         assert_eq!(events.get("worker_spawn"), Some(&1));
-        assert_eq!(gap, None, "the first request on a surface has no gap");
+        assert_eq!(gap, Some(45));
 
         // Events are drained, not remembered.
-        let (events, gap) = registry.observe("channel", start + chrono::Duration::seconds(45));
+        let (events, gap) = registry.observe("channel", start + chrono::Duration::seconds(90));
         assert!(events.is_empty());
         assert_eq!(gap, Some(45));
+    }
+
+    /// The production bug this replaced: one global pending slot attributed a
+    /// write to whichever surface requested first, so a write performed during
+    /// a branch turn left the channel's next request untagged — 47 writes, one
+    /// tagged channel line in 14h.
+    #[test]
+    fn a_tag_reaches_every_surface_that_has_issued_a_request() {
+        let mut registry = Registry::default();
+        let start = Utc::now();
+
+        registry.observe("channel", start);
+        registry.observe("branch", start);
+        registry.observe("worker", start);
+
+        registry.tag(CacheEvent::MemoryWrite.label());
+
+        for surface in ["channel", "branch", "worker"] {
+            let (events, _) = registry.observe(surface, start + chrono::Duration::seconds(5));
+            assert_eq!(
+                events.get("memory_write"),
+                Some(&1),
+                "{surface} must carry the write it renders"
+            );
+        }
+    }
+
+    #[test]
+    fn a_surface_that_has_never_requested_is_not_taggable() {
+        let mut registry = Registry::default();
+        registry.tag(CacheEvent::MemoryWrite.label());
+
+        let (events, _) = registry.observe("channel", Utc::now());
+        assert!(
+            events.is_empty(),
+            "nothing to attribute before a surface's first request"
+        );
+    }
+
+    #[test]
+    fn tagging_one_surface_twice_counts_once_per_surface() {
+        let mut registry = Registry::default();
+        let start = Utc::now();
+        registry.observe("channel", start);
+        registry.observe("branch", start);
+
+        registry.tag(CacheEvent::ChronicleWrite.label());
+        registry.tag(CacheEvent::ChronicleWrite.label());
+
+        let (channel, _) = registry.observe("channel", start + chrono::Duration::seconds(1));
+        let (branch, _) = registry.observe("branch", start + chrono::Duration::seconds(1));
+        assert_eq!(channel.get("chronicle_write"), Some(&2));
+        assert_eq!(branch.get("chronicle_write"), Some(&2));
     }
 
     #[test]
