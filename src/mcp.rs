@@ -180,7 +180,12 @@ impl McpConnection {
     pub async fn session_closed(&self) -> bool {
         let guard = self.client.lock().await;
         match guard.as_ref() {
-            Some(session) => session.is_closed(),
+            // `is_closed()` only reports the service handle being cancelled or
+            // dropped: when the child exits on its own the serve loop breaks
+            // without cancelling its token, so that flag never flips. The
+            // peer's sink closes as soon as the serve loop stops, which is the
+            // actual physical-liveness signal for a dead child.
+            Some(session) => session.is_closed() || session.peer().is_transport_closed(),
             None => true,
         }
     }
