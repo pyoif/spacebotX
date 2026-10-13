@@ -3313,6 +3313,24 @@ impl Channel {
         };
         info.cron_job_count = cron_job_count;
 
+        // Annotate configured MCP servers with live connection health, so a
+        // crashed server reads "(down)" in the status block instead of being
+        // listed as if it were still connected.
+        let mcp_statuses = self.deps.mcp_manager.statuses().await;
+        info.mcp_servers = info
+            .mcp_servers
+            .iter()
+            .map(
+                |name| match mcp_statuses.iter().find(|status| &status.name == name) {
+                    Some(status) => match status.state.health_suffix() {
+                        Some(suffix) => format!("{name} ({suffix})"),
+                        None => name.clone(),
+                    },
+                    None => name.clone(),
+                },
+            )
+            .collect();
+
         info
     }
 

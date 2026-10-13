@@ -32,7 +32,8 @@ pub struct SystemInfo {
     pub max_branches: usize,
     /// Enabled capability flags (e.g. "browser", "web_search", "opencode").
     pub capabilities: Vec<String>,
-    /// Names of connected MCP servers.
+    /// Enabled MCP servers, annotated with live health when it is not healthy —
+    /// e.g. `browsee (down)`, `browsee (reconnecting)`.
     pub mcp_servers: Vec<String>,
     /// Whether sandbox containment is active.
     pub sandbox_active: bool,
@@ -883,6 +884,20 @@ mod tests {
         assert!(rendered.contains("embeddings ready"));
         // Cron
         assert!(rendered.contains("4 active jobs"));
+    }
+
+    #[test]
+    fn render_full_surfaces_unhealthy_mcp_servers() {
+        use super::SystemInfo;
+
+        let status = StatusBlock::new();
+        let info = SystemInfo {
+            mcp_servers: vec!["browsee (down)".into(), "linear".into()],
+            ..Default::default()
+        };
+
+        let rendered = status.render_full("2026-03-08 10:30:00 EST", &info);
+        assert!(rendered.contains("MCP: browsee (down), linear (2 servers)"));
     }
 
     #[test]
