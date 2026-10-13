@@ -10,11 +10,26 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 type McpClientSession = RunningService<RoleClient, McpClientHandler>;
+
+/// Backoff ladder for eager restarts after an observed child exit.
+///
+/// Proportional growth (x4) starting small: 2s, 8s, 32s. Once the ladder is
+/// exhausted the server is marked down — but `call_tool` still respawns on
+/// demand, so a later tool call always gets a fresh attempt.
+const EAGER_RESTART_BACKOFF_SECS: [u64; 3] = [2, 8, 32];
+
+/// Liveness poll cadence while a session is running.
+const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Poll cadence while a server is down — the monitor is waiting for either a
+/// successful on-demand respawn or the startup retry task.
+const DOWN_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -23,6 +38,20 @@ pub enum McpConnectionState {
     Connected,
     Failed(String),
     Disconnected,
+}
+
+impl McpConnectionState {
+    /// Status-block annotation for this state, or `None` when healthy.
+    ///
+    /// Makes a crashed server visible in the status line instead of being
+    /// listed as if it were connected.
+    pub fn health_suffix(&self) -> Option<&'static str> {
+        match self {
+            McpConnectionState::Connected => None,
+            McpConnectionState::Connecting => Some("reconnecting"),
+            McpConnectionState::Disconnected | McpConnectionState::Failed(_) => Some("down"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
@@ -78,6 +107,11 @@ pub struct McpConnection {
     client: Mutex<Option<McpClientSession>>,
     tools: RwLock<Vec<rmcp::model::Tool>>,
     tool_list_changed: Arc<AtomicBool>,
+    /// Serialises respawn attempts so the two heal paths (the liveness monitor
+    /// and an on-demand tool call) cannot spawn two children for one server.
+    reconnect_lock: Mutex<()>,
+    /// Set once the liveness monitor for this connection has been spawned.
+    monitor_started: AtomicBool,
 }
 
 #[cfg(feature = "metrics")]
@@ -121,6 +155,8 @@ impl McpConnection {
             client: Mutex::new(None),
             tools: RwLock::new(Vec::new()),
             tool_list_changed: Arc::new(AtomicBool::new(false)),
+            reconnect_lock: Mutex::new(()),
+            monitor_started: AtomicBool::new(false),
         }
     }
 
@@ -134,6 +170,99 @@ impl McpConnection {
 
     pub async fn is_connected(&self) -> bool {
         matches!(self.state().await, McpConnectionState::Connected)
+    }
+
+    /// True when no usable session is installed, or the installed session's
+    /// service loop has stopped (child exit, transport close, cancellation).
+    ///
+    /// This is the physical liveness check. `state()` is only the *reported*
+    /// health and can lag a child exit until something observes it.
+    pub async fn session_closed(&self) -> bool {
+        let guard = self.client.lock().await;
+        match guard.as_ref() {
+            Some(session) => session.is_closed(),
+            None => true,
+        }
+    }
+
+    /// Reported health: connected *and* backed by a live session.
+    pub async fn is_alive(&self) -> bool {
+        !self.session_closed().await && self.is_connected().await
+    }
+
+    /// Tear down any dead session and re-establish the connection.
+    ///
+    /// Shared by both heal paths — the liveness monitor's eager restart and
+    /// `call_tool`'s on-demand respawn — and serialised by `reconnect_lock`.
+    pub async fn respawn(&self) -> Result<()> {
+        let _reconnect_guard = self.reconnect_lock.lock().await;
+
+        // Drop the stale session first: `RunningService`'s drop cancels its
+        // service loop, and leaving it in the slot would make a failed
+        // handshake look like a live connection.
+        let stale = self.client.lock().await.take();
+        drop(stale);
+
+        self.connect().await
+    }
+
+    /// Start this connection's liveness monitor (idempotent).
+    ///
+    /// The monitor watches for the MCP child exiting and eagerly restarts the
+    /// server on the [`EAGER_RESTART_BACKOFF_SECS`] ladder. Once that ladder is
+    /// exhausted the server is left marked down and the monitor goes back to
+    /// waiting — the next tool call still respawns on demand.
+    pub fn ensure_monitor(self: &Arc<Self>) {
+        if self
+            .monitor_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let connection = Arc::downgrade(self);
+        tokio::spawn(async move {
+            monitor_connection(connection).await;
+        });
+    }
+
+    /// Up to [`EAGER_RESTART_BACKOFF_SECS`] restarts after an observed exit.
+    ///
+    /// Returns `true` as soon as a session is live again; `false` when the
+    /// ladder is exhausted, in which case the connection is left marked down.
+    async fn eager_restart(&self) -> bool {
+        for (index, delay_secs) in EAGER_RESTART_BACKOFF_SECS.iter().enumerate() {
+            if !self.session_closed().await {
+                return true;
+            }
+
+            {
+                let mut state = self.state.write().await;
+                *state = McpConnectionState::Connecting;
+            }
+
+            tokio::time::sleep(Duration::from_secs(*delay_secs)).await;
+
+            if !self.session_closed().await {
+                return true;
+            }
+
+            match self.respawn().await {
+                Ok(()) => return true,
+                Err(error) => {
+                    tracing::warn!(
+                        server = %self.name,
+                        attempt = index + 1,
+                        max_attempts = EAGER_RESTART_BACKOFF_SECS.len(),
+                        %error,
+                        "mcp server restart attempt failed"
+                    );
+                }
+            }
+        }
+
+        false
     }
 
     pub async fn connect(&self) -> Result<()> {
@@ -330,7 +459,61 @@ impl McpConnection {
         self.tools.read().await.clone()
     }
 
+    /// Call a tool, self-healing a dead connection.
+    ///
+    /// If the first attempt fails because the server's session is gone (child
+    /// exit, transport close), the server is respawned and the call retried
+    /// **once**. A failure on a *live* connection is returned unchanged — a
+    /// tool that genuinely fails twice must not become a retry loop.
     pub async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<rmcp::model::CallToolResult> {
+        match self.call_tool_once(tool_name, arguments.clone()).await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if !self.should_respawn_after_failure(&error).await {
+                    return Err(error);
+                }
+
+                tracing::warn!(
+                    server = %self.name,
+                    tool = %tool_name,
+                    %error,
+                    "mcp tool call failed on a dead connection; respawning server and retrying once"
+                );
+
+                match self.respawn().await {
+                    Ok(()) => self
+                        .call_tool_once(tool_name, arguments)
+                        .await
+                        .context(format!(
+                            "mcp server '{}' was restarted but '{}' still failed",
+                            self.name, tool_name
+                        )),
+                    Err(restart_error) => Err(anyhow!(
+                        "mcp server '{}' is down and could not be restarted: {restart_error}",
+                        self.name
+                    )),
+                }
+            }
+        }
+    }
+
+    /// Whether a failed call is evidence of a dead connection rather than a
+    /// server-side tool error.
+    async fn should_respawn_after_failure(&self, error: &anyhow::Error) -> bool {
+        if self.session_closed().await {
+            return true;
+        }
+
+        // The service loop can lag a child exit by a tick, so also treat
+        // transport-shaped errors as death evidence.
+        looks_like_transport_failure(&error.to_string())
+    }
+
+    async fn call_tool_once(
         &self,
         tool_name: &str,
         arguments: serde_json::Value,
@@ -634,6 +817,8 @@ impl McpManager {
             (old_connection, connection)
         };
 
+        connection.ensure_monitor();
+
         if let Some(old_connection) = old_connection {
             old_connection.disconnect().await;
         }
@@ -777,11 +962,19 @@ impl McpManager {
     }
 
     async fn upsert_connection(&self, config: McpServerConfig) -> Arc<McpConnection> {
-        let mut connections = self.connections.write().await;
-        connections
-            .entry(config.name.clone())
-            .or_insert_with(|| Arc::new(McpConnection::new(config)))
-            .clone()
+        let connection = {
+            let mut connections = self.connections.write().await;
+            connections
+                .entry(config.name.clone())
+                .or_insert_with(|| Arc::new(McpConnection::new(config)))
+                .clone()
+        };
+
+        // Every connection gets one liveness monitor, started here so all
+        // creation paths (startup, config reconcile, manual reconnect) are
+        // covered.
+        connection.ensure_monitor();
+        connection
     }
 }
 
@@ -819,6 +1012,84 @@ fn parse_bearer_token(auth_value: &str, server_name: &str) -> anyhow::Result<Str
         // Raw token with no scheme prefix — pass through as-is.
         Ok(trimmed.to_string())
     }
+}
+
+/// Watch a connection's session and restart the server when it stops.
+///
+/// Runs for the lifetime of the owning [`McpConnection`] — it holds only a
+/// `Weak`, so it exits once the manager drops the connection.
+///
+/// Two phases: wait for a live session (a server that never came up is the
+/// startup retry task's business), then watch that session until it stops.
+/// Only an *observed* exit triggers the eager restart ladder.
+async fn monitor_connection(connection: Weak<McpConnection>) {
+    loop {
+        // Phase 1 — wait for a live session.
+        loop {
+            let Some(connection) = connection.upgrade() else {
+                return;
+            };
+            if !connection.session_closed().await {
+                break;
+            }
+            drop(connection);
+            tokio::time::sleep(DOWN_POLL_INTERVAL).await;
+        }
+
+        // Phase 2 — watch it until it stops.
+        loop {
+            let Some(connection) = connection.upgrade() else {
+                return;
+            };
+            if connection.session_closed().await {
+                break;
+            }
+            drop(connection);
+            tokio::time::sleep(LIVENESS_POLL_INTERVAL).await;
+        }
+
+        let Some(connection) = connection.upgrade() else {
+            return;
+        };
+
+        tracing::warn!(
+            server = %connection.name,
+            "mcp server child exited; attempting automatic restart"
+        );
+
+        if connection.eager_restart().await {
+            tracing::info!(
+                server = %connection.name,
+                "mcp server restarted after child exit"
+            );
+        } else {
+            tracing::error!(
+                server = %connection.name,
+                attempts = EAGER_RESTART_BACKOFF_SECS.len(),
+                "mcp server is down after restart attempts; the next tool call will retry"
+            );
+        }
+    }
+}
+
+/// True when an MCP client error describes a broken transport rather than a
+/// server-side tool rejection.
+///
+/// Tool-level failures arrive as `Ok` results with `is_error`, so an `Err` here
+/// is already transport-shaped; this only widens the case where the service
+/// loop has not yet observed the child exit.
+fn looks_like_transport_failure(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    const MARKERS: [&str; 6] = [
+        "not connected",
+        "closed",
+        "transport",
+        "broken pipe",
+        "unexpected eof",
+        "connection",
+    ];
+
+    MARKERS.iter().any(|marker| lowered.contains(marker))
 }
 
 fn service_error_to_anyhow(error: ServiceError) -> anyhow::Error {
@@ -923,4 +1194,139 @@ mod tests {
         assert_eq!(interpolate_env_placeholders("${"), "${");
         assert_eq!(interpolate_env_placeholders("${}"), "${}");
     }
+
+    #[test]
+    fn eager_restart_ladder_is_proportional_and_bounded() {
+        assert_eq!(EAGER_RESTART_BACKOFF_SECS, [2, 8, 32]);
+
+        // Proportional growth (x4) from a small starting interval.
+        let mut previous = EAGER_RESTART_BACKOFF_SECS[0];
+        for delay in EAGER_RESTART_BACKOFF_SECS.iter().skip(1) {
+            assert!(delay > &previous);
+            assert_eq!(delay / previous, 4);
+            previous = *delay;
+        }
+    }
+
+    #[test]
+    fn transport_failures_are_recognised() {
+        assert!(looks_like_transport_failure(
+            "MCP tool call failed: transport closed"
+        ));
+        assert!(looks_like_transport_failure(
+            "mcp server 'browsee' is not connected"
+        ));
+        assert!(looks_like_transport_failure("unexpected EOF during read"));
+
+        // A server-side tool rejection is not death evidence.
+        assert!(!looks_like_transport_failure("tool reported an error"));
+    }
+
+    #[test]
+    fn connection_states_map_to_status_suffixes() {
+        assert_eq!(McpConnectionState::Connected.health_suffix(), None);
+        assert_eq!(
+            McpConnectionState::Connecting.health_suffix(),
+            Some("reconnecting")
+        );
+        assert_eq!(
+            McpConnectionState::Disconnected.health_suffix(),
+            Some("down")
+        );
+        assert_eq!(
+            McpConnectionState::Failed("handshake failed".into()).health_suffix(),
+            Some("down")
+        );
+    }
+
+    fn stdio_config(name: &str, command: &str, args: &[&str]) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: McpTransport::Stdio {
+                command: command.to_string(),
+                args: args.iter().map(|arg| arg.to_string()).collect(),
+                env: HashMap::new(),
+            },
+            enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_without_a_session_reads_as_down() {
+        let connection = McpConnection::new(stdio_config("mock", "python3", &[]));
+
+        assert!(connection.session_closed().await);
+        assert!(!connection.is_alive().await);
+        assert_eq!(connection.state().await.health_suffix(), Some("down"));
+    }
+
+    #[tokio::test]
+    async fn call_tool_respawns_a_dead_server_and_retries_once() {
+        let connection = McpConnection::new(stdio_config(
+            "mock",
+            "python3",
+            &["-u", "-c", MOCK_MCP_SERVER],
+        ));
+
+        connection.connect().await.expect("initial connect");
+        assert!(connection.is_alive().await);
+
+        // The mock exits as soon as this tool is called, killing the child.
+        let killed = connection.call_tool("die", serde_json::json!({})).await;
+        assert!(killed.is_err(), "a call into a dead child must fail");
+
+        // Let the service loop observe the exit before the heal path runs.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(connection.session_closed().await);
+
+        // Second call: the connection is dead, so it must be respawned and the
+        // call retried transparently.
+        let healed = connection
+            .call_tool("echo", serde_json::json!({}))
+            .await
+            .expect("call must succeed after the server is respawned");
+
+        assert!(!healed.content.is_empty());
+        assert!(connection.is_alive().await);
+    }
+
+    /// Minimal MCP stdio server: newline-delimited JSON-RPC, replies to
+    /// `initialize` / `tools/list` / `tools/call`, and exits when the `die`
+    /// tool is called so the client has to heal.
+    const MOCK_MCP_SERVER: &str = r#"
+import json, os, sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    method = msg.get("method")
+    msg_id = msg.get("id")
+    if method == "initialize":
+        params = msg.get("params") or {}
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {
+            "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "mock-mcp", "version": "1.0.0"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": [
+            {"name": "echo", "description": "echo", "inputSchema": {"type": "object"}},
+            {"name": "die", "description": "exit", "inputSchema": {"type": "object"}}]}})
+    elif method == "tools/call":
+        params = msg.get("params") or {}
+        if params.get("name") == "die":
+            os._exit(1)
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {"content": [
+            {"type": "text", "text": "ok"}]}})
+    elif msg_id is not None:
+        send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": "no method"}})
+"#;
 }
