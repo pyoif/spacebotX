@@ -776,7 +776,11 @@ impl CortexChatSession {
                 crate::llm::record::DebugContext {
                     process: Some(crate::llm::record::ProcessRef {
                         kind: "cortex".to_string(),
-                        id: None,
+                        // The thread *is* the cortex chat session, and it is
+                        // already in hand here — leaving it empty made every
+                        // cortex-chat request indistinguishable from every
+                        // other on the same channel.
+                        id: Some(thread_id.to_string()),
                         process_type: Some("cortex_chat".to_string()),
                         channel_id: channel_context_id.map(str::to_string),
                     }),

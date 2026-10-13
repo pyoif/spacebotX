@@ -449,6 +449,29 @@ impl SpacebotModel {
             .unwrap_or_else(|| "unknown".to_string())
     }
 
+    /// The session identifier a cache-usage line is keyed by.
+    ///
+    /// [`Self::cache_surface`] names the *kind* of process (channel, branch,
+    /// worker); this names the individual conversation within it, so an audit
+    /// can group a session's requests by the id the process already carries
+    /// instead of inferring sessions from timestamp gaps. The process ref has
+    /// it: the channel id for a channel turn, the branch or worker uuid
+    /// elsewhere, the thread id for a cortex chat. Channel-scoped runs with no
+    /// id of their own (compaction, the chronicle) report the channel whose
+    /// cache they share.
+    ///
+    /// Empty when the process has no identity to report — the one-shot cortex
+    /// runs, ingestion, and any model built without a debug context — because a
+    /// synthetic id would group unrelated requests together and look
+    /// authoritative doing it.
+    fn cache_session(&self) -> String {
+        self.debug_context
+            .as_ref()
+            .and_then(|context| context.process.as_ref())
+            .and_then(|process| process.id.clone())
+            .unwrap_or_default()
+    }
+
     fn usage_ref(&self, body: &serde_json::Value) -> crate::llm::record::UsageRef {
         let extended = if self.provider == "anthropic" {
             crate::llm::usage::ExtendedUsage::from_anthropic_body(body)
@@ -1442,6 +1465,7 @@ impl CompletionModel for SpacebotModel {
         if let Ok(ref response) = result {
             crate::llm::cache_stats::record(
                 &self.cache_surface(),
+                &self.cache_session(),
                 &self.full_model_name,
                 crate::llm::cache_stats::CacheUsage::from_body(
                     &self.provider,
@@ -2101,8 +2125,10 @@ impl SpacebotModel {
         let stream_model_name = self.full_model_name.clone();
         let stream_provider = self.provider.clone();
         // R7-lite: captured before the generator so the streaming usage hook
-        // can label its line with the surface that sent the request.
+        // can label its line with the surface and session that sent the
+        // request.
         let stream_surface = self.cache_surface();
+        let stream_session = self.cache_session();
         let stream = async_stream::stream! {
             let mut stream = response.bytes_stream();
             let mut block_buffer = String::new();
@@ -2230,7 +2256,7 @@ impl SpacebotModel {
                     }
                 };
 
-                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, UsageLog::Stream).await;
+                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, &stream_session, UsageLog::Stream).await;
                 yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                     body: response_body,
                     usage: Some(parsed_response.usage),
@@ -2263,7 +2289,7 @@ impl SpacebotModel {
             if let Some(message_id) = parsed_response.message_id {
                 yield Ok(RawStreamingChoice::MessageId(message_id));
             }
-            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, UsageLog::Stream).await;
+            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, &stream_session, UsageLog::Stream).await;
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: response_body,
                 usage: Some(parsed_response.usage),
@@ -2615,8 +2641,10 @@ impl SpacebotModel {
         let stream_model_name = self.full_model_name.clone();
         let stream_provider = self.provider.clone();
         // R7-lite: captured before the generator so the streaming usage hook
-        // can label its line with the surface that sent the request.
+        // can label its line with the surface and session that sent the
+        // request.
         let stream_surface = self.cache_surface();
+        let stream_session = self.cache_session();
         let stream = async_stream::stream! {
             let mut stream = response.bytes_stream();
             let mut block_buffer = String::new();
@@ -2730,7 +2758,7 @@ impl SpacebotModel {
                     }
                 };
 
-                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, usage_log).await;
+                record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, &stream_session, usage_log).await;
                 yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                     body: response_body,
                     usage: Some(parsed_response.usage),
@@ -2764,7 +2792,7 @@ impl SpacebotModel {
                 yield Ok(RawStreamingChoice::MessageId(message_id));
             }
 
-            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, usage_log).await;
+            record_streaming_usage(&stream_accumulator, &response_body, &stream_model_name, &stream_provider, &stream_surface, &stream_session, usage_log).await;
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: response_body,
                 usage: Some(parsed_response.usage),
@@ -2783,6 +2811,7 @@ async fn record_streaming_usage(
     model_name: &str,
     provider: &str,
     surface: &str,
+    session_id: &str,
     usage_log: UsageLog,
 ) {
     // R7-lite: a real stream is where the channel's tokens come from, and its
@@ -2793,6 +2822,7 @@ async fn record_streaming_usage(
     if usage_log.hook_logs() {
         crate::llm::cache_stats::record(
             surface,
+            session_id,
             model_name,
             crate::llm::cache_stats::CacheUsage::from_body(provider, body),
         );

@@ -22,9 +22,9 @@
 //!    `memory_write` events reached exactly one channel line, because the
 //!    branch that performed the write consumed the tag first.
 //! 3. [`record`] appends one JSON line per LLM call to
-//!    `<data_dir>/cache_stats.jsonl`, carrying the usage triple, the gap since
-//!    the previous request on the same surface, and the events that landed in
-//!    between.
+//!    `<data_dir>/cache_stats.jsonl`, carrying the usage triple, the session
+//!    that sent it, the gap since the previous request on the same surface,
+//!    and the events that landed in between.
 //!
 //! Why the noise floor: a provider reports a cache miss for a handful of
 //! tokens constantly (the tail of the epilogue, a rounding at the boundary).
@@ -35,6 +35,15 @@
 //! expire); a full miss seconds after a hit is a provider-side artifact we
 //! have seen (upstream rotation). Separating the two by time is the whole
 //! point of logging the gap.
+//!
+//! Why the session: the surface says which *kind* of process sent a request,
+//! not which conversation. Recovering that from timestamps — "requests within
+//! ten minutes of each other are one session" — is a heuristic that misreports
+//! exactly the case this log is read for: an idle gap, where the question is
+//! whether the *same* conversation came back. Each line carries the identifier
+//! its process already has, so a report groups by it instead of guessing. It is
+//! empty only where a process genuinely has no identity of its own; see
+//! [`CacheStatsLine::session_id`].
 //!
 //! Only successful responses are logged. A failed request reports no usage at
 //! all, and a line with `input: null` is indistinguishable at a glance from a
@@ -213,6 +222,19 @@ pub struct CacheStatsLine {
     pub ts: DateTime<Utc>,
     /// Which process sent the request: channel, worker, branch, cortex, …
     pub surface: String,
+    /// Which session within that surface: the channel id for a channel turn,
+    /// a branch or worker uuid, a cortex chat thread id.
+    ///
+    /// Empty when the process has no identity of its own — the one-shot cortex
+    /// runs (intraday synthesis, daily summary, profile), ingestion, and any
+    /// model built without a debug context. An invented id would be worse than
+    /// an absent one: it would group unrelated requests together and look
+    /// authoritative doing it.
+    ///
+    /// `serde(default)` so a log written before this field existed still
+    /// parses — an audit has to read across the change.
+    #[serde(default)]
+    pub session_id: String,
     pub model: String,
     pub input: Option<u64>,
     pub cached: Option<u64>,
@@ -344,9 +366,13 @@ pub fn tag(event: CacheEvent) {
 
 /// Log one completed LLM request.
 ///
+/// `surface` names the kind of process, `session_id` the individual
+/// conversation within it (see [`CacheStatsLine::session_id`]; empty when the
+/// process has none).
+///
 /// The write is spawned, never awaited: it is a diagnostic, and it must not sit
 /// in front of a turn. Returns immediately when logging is off.
-pub fn record(surface: &str, model: &str, usage: CacheUsage) {
+pub fn record(surface: &str, session_id: &str, model: &str, usage: CacheUsage) {
     let Some(path) = LOG_PATH.get().cloned() else {
         return;
     };
@@ -368,6 +394,7 @@ pub fn record(surface: &str, model: &str, usage: CacheUsage) {
     let line = CacheStatsLine {
         ts: now,
         surface: surface.to_string(),
+        session_id: session_id.to_string(),
         model: model.to_string(),
         input: usage.input,
         cached: usage.cached,
@@ -658,6 +685,7 @@ mod tests {
         let line = CacheStatsLine {
             ts: Utc::now(),
             surface: "channel".to_string(),
+            session_id: "telegram:7437353183".to_string(),
             model: "deepseek/deepseek-v4.1-flash".to_string(),
             input: Some(61000),
             cached: Some(60400),
@@ -673,6 +701,94 @@ mod tests {
 
         let parsed: CacheStatsLine = serde_json::from_str(&jsonl).expect("parse");
         assert_eq!(parsed, line);
+        assert_eq!(
+            parsed.session_id, "telegram:7437353183",
+            "the session must survive the round trip, not just serialize"
+        );
+    }
+
+    /// A line shaped the way `record` builds one, so the schema tests exercise
+    /// the same field set production writes.
+    fn sample_line(surface: &str, session_id: &str, usage: CacheUsage) -> CacheStatsLine {
+        CacheStatsLine {
+            ts: Utc::now(),
+            surface: surface.to_string(),
+            session_id: session_id.to_string(),
+            model: "je/deepseek-v4.1-flash".to_string(),
+            input: usage.input,
+            cached: usage.cached,
+            output: usage.output,
+            fresh: usage.fresh(),
+            gap_secs: None,
+            events: BTreeMap::new(),
+            fresh_over_floor: usage.fresh_over_floor(),
+        }
+    }
+
+    #[test]
+    fn session_id_is_on_the_line_for_both_provider_shapes() {
+        let openai = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 61000,
+                "prompt_cache_hit_tokens": 60400,
+                "prompt_cache_miss_tokens": 600,
+                "completion_tokens": 120
+            }
+        });
+        let anthropic = serde_json::json!({
+            "usage": {
+                "input_tokens": 600,
+                "cache_read_input_tokens": 60400,
+                "output_tokens": 120
+            }
+        });
+
+        for (provider, body, session) in [
+            ("openai", &openai, "telegram:1"),
+            ("anthropic", &anthropic, "b2f1c0de-branch"),
+        ] {
+            let usage = CacheUsage::from_body(provider, body);
+            let jsonl = sample_line("channel", session, usage)
+                .to_jsonl()
+                .expect("serialize");
+            let value: serde_json::Value = serde_json::from_str(&jsonl).expect("parse");
+
+            assert_eq!(
+                value["session_id"], session,
+                "a {provider}-shaped line must carry its session"
+            );
+        }
+    }
+
+    /// A surface with no identity of its own still writes the field, as an
+    /// empty string. Omitting it would make the line indistinguishable from one
+    /// written before the field existed, which is the thing an audit cannot
+    /// tell apart on its own.
+    #[test]
+    fn a_session_less_surface_writes_an_empty_string_not_a_missing_field() {
+        let jsonl = sample_line("cortex", "", CacheUsage::unknown())
+            .to_jsonl()
+            .expect("serialize");
+
+        assert!(
+            jsonl.contains("\"session_id\":\"\""),
+            "the field must be present and empty, got: {jsonl}"
+        );
+    }
+
+    /// The log outlives the schema: lines written before `session_id` existed
+    /// are still on disk (verbatim from production, 2026-10-12) and an audit
+    /// reading across the change must not fail on them.
+    #[test]
+    fn a_line_written_before_the_session_field_still_parses() {
+        let legacy = r#"{"ts":"2026-10-12T14:02:31.659491187Z","surface":"cortex","model":"je/deepseek-v4.1-flash","input":1278,"cached":0,"output":953,"fresh":1278,"gap_secs":0,"events":{},"fresh_over_floor":true}"#;
+
+        let parsed: CacheStatsLine = serde_json::from_str(legacy).expect("parse");
+        assert_eq!(parsed.surface, "cortex");
+        assert_eq!(
+            parsed.session_id, "",
+            "an absent field reads as unknown, not as a parse failure"
+        );
     }
 
     #[test]
@@ -701,6 +817,7 @@ mod tests {
             let line = CacheStatsLine {
                 ts: Utc::now(),
                 surface: "channel".to_string(),
+                session_id: format!("telegram:{index}"),
                 model: "m".to_string(),
                 input: Some(1000 + index),
                 cached: Some(900),
