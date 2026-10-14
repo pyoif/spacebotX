@@ -1043,20 +1043,33 @@ mod tests {
         // Two checkpoints: one carries the query token in its title, the other
         // only in its (longer) summary. With per-column bm25 weighting the title
         // hit must outrank the summary hit.
-        // `covers_to_seq` must be distinct per row: the (channel_id, level,
-        // covers_to_seq) boundary index is unique, and its DEFAULT of 0 would
-        // make two same-level checkpoints in one channel collide.
-        for (id, title, summary, covers_to_seq) in [
+        //
+        // Both rows live in the same channel at level 0, so they must satisfy
+        // every unique index on `channel_chronicle_checkpoints` (see
+        // migrations/20260809000004_session_chronicles.sql and
+        // migrations/20260810000001_conversation_message_seq.sql):
+        //
+        //   * `idx_chronicle_seq`          (channel_id, seq)          -> distinct `seq`
+        //   * `idx_chronicle_boundary_seq` (channel_id, level, to_seq) -> distinct `covers_to_seq`
+        //   * `idx_chronicle_boundary`     (channel_id, level, covers_to_message_id)
+        //       partial, WHERE covers_to_message_id IS NOT NULL — both rows leave
+        //       it NULL, so it cannot collide.
+        //
+        // `seq` and `covers_to_seq` are bound per row rather than left to their
+        // DEFAULT of 0, which would make the two same-channel rows collide.
+        for (id, title, summary, seq, covers_to_seq) in [
             (
                 "cp-title",
                 "caching strategy",
                 "a long span about unrelated things",
+                1,
                 1,
             ),
             (
                 "cp-summary",
                 "unrelated heading",
                 "this span discussed caching at length across many paragraphs and many more words besides",
+                2,
                 2,
             ),
         ] {
@@ -1065,10 +1078,11 @@ mod tests {
                 INSERT INTO channel_chronicle_checkpoints
                     (id, channel_id, seq, level, kind, title, summary,
                      covers_from_at, covers_to_at, covers_to_seq, message_count, token_estimate)
-                VALUES (?, 'chan-1', 1, 0, 'interval', ?, ?, '2026-01-01', '2026-01-02', ?, 1, 10)
+                VALUES (?, 'chan-1', ?, 0, 'interval', ?, ?, '2026-01-01', '2026-01-02', ?, 1, 10)
                 "#,
             )
             .bind(id)
+            .bind(seq)
             .bind(title)
             .bind(summary)
             .bind(covers_to_seq)
