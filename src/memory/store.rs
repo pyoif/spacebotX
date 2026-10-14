@@ -241,20 +241,37 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// Delete a memory by ID together with the graph rows that point at it.
+    /// Delete a memory by ID together with every satellite row that points at
+    /// it, so a hard delete leaves no orphaned rows anywhere.
     ///
-    /// `memory_edges`/`memory_nodes` store loose `TEXT` entry ids — deliberately
-    /// no foreign key, so nothing cascades (see
-    /// `20260818000001_memory_graph.sql`). A hard delete therefore has to reclaim
-    /// the entry's graph node and every edge touching it in either direction, or
-    /// they linger as inert orphan rows that nothing ever sweeps. Unlike a
-    /// *forgotten* entry, whose graph rows are still meaningful to recall's
-    /// supersedes walk, a pruned entry is gone for good, so its rows go with it.
+    /// Three tables reference a memory but cannot be relied on to reclaim their
+    /// own rows when it is deleted:
     ///
-    /// Both graph deletes plus the memory delete run in one transaction.
-    /// `delete()` stays the plain single-statement delete for callers that need
-    /// it.
-    pub async fn delete_with_graph_cleanup(&self, id: &str) -> Result<()> {
+    /// * `memory_edges`/`memory_nodes` store loose `TEXT` entry ids — deliberately
+    ///   no foreign key, so nothing cascades (see
+    ///   `20260818000001_memory_graph.sql`).
+    /// * `memory_vectors` and `human_identities` *do* declare
+    ///   `REFERENCES memories(id) ON DELETE CASCADE`
+    ///   (`20260816000001_memory_search_sqlite.sql`,
+    ///   `20260812000002_human_identities.sql`), but the cascade is inert: the
+    ///   daemon connects with a plain `SqlitePool::connect` and never issues
+    ///   `PRAGMA foreign_keys = ON` (see `src/db.rs`), and SQLite defaults that
+    ///   pragma to OFF per connection.
+    ///
+    /// So a hard delete has to reclaim all four by hand, or the graph rows
+    /// linger as inert orphans and the vector blob / identity rows pile up in a
+    /// graveyard nothing ever sweeps. This mirrors the deliberate choice for the
+    /// graph rows: explicit, audited deletes in one transaction are narrower and
+    /// pragma-proof, versus flipping the global FK pragma on every connection.
+    ///
+    /// Unlike a *forgotten* entry — whose graph rows are still meaningful to
+    /// recall's supersedes walk, and whose vector/identity rows must stay so the
+    /// anchor remains resolvable — a pruned entry is gone for good, so every one
+    /// of its satellite rows goes with it.
+    ///
+    /// All deletes plus the memory delete run in one transaction. `delete()`
+    /// stays the plain single-statement delete for callers that need it.
+    pub async fn delete_with_cleanup(&self, id: &str) -> Result<()> {
         #[cfg(feature = "metrics")]
         let _timer = {
             let agent_label = if self.agent_id.is_empty() {
@@ -288,6 +305,22 @@ impl MemoryStore {
             .execute(&mut *transaction)
             .await
             .with_context(|| format!("failed to delete graph node for memory {id}"))?;
+
+        // The declared cascades on these two tables are inert (FK pragma is OFF),
+        // so reclaim them explicitly. `human_identities` can hold more than one
+        // identity row per anchor memory; both statements are idempotent no-ops
+        // when the memory had no vector or identity.
+        sqlx::query("DELETE FROM memory_vectors WHERE memory_id = ?")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("failed to delete vector row for memory {id}"))?;
+
+        sqlx::query("DELETE FROM human_identities WHERE memory_id = ?")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("failed to delete human identity rows for memory {id}"))?;
 
         let _result = sqlx::query("DELETE FROM memories WHERE id = ?")
             .bind(id)
