@@ -183,7 +183,16 @@ async fn prune_memories(
     for row in candidates {
         let id: String = row.try_get("id")?;
         check_maintenance_cancellation(maintenance_cancel_rx).await?;
-        maintenance_cancelable_op(maintenance_cancel_rx, memory_store.delete(&id)).await?;
+        // Prune is the only hard delete in the system, and the graph tables have
+        // no FK cascade (`memory_edges`/`memory_nodes` hold loose entry ids), so
+        // this is where their orphan rows get reclaimed. Consolidation only
+        // *forgets* an entry and must keep its graph rows: recall still walks
+        // supersedes edges through forgotten entries.
+        maintenance_cancelable_op(
+            maintenance_cancel_rx,
+            memory_store.delete_with_graph_cleanup(&id),
+        )
+        .await?;
         pruned_count += 1;
     }
 
@@ -508,6 +517,155 @@ mod tests {
             .expect("failed to store embedding");
 
         memory
+    }
+
+    async fn create_aged_memory_with_embedding(
+        store: &MemoryStore,
+        embedding_table: &MemoryVectorTable,
+        content: &str,
+        memory_type: MemoryType,
+        importance: f32,
+        age_days: i64,
+        embedding: Vec<f32>,
+    ) -> Memory {
+        let mut memory = Memory::new(content, memory_type).with_importance(importance);
+        // Prune only considers memories older than `min_age_days`, so backdate
+        // the row; `save` persists the struct's own `created_at`.
+        memory.created_at = chrono::Utc::now() - chrono::Duration::days(age_days);
+        store.save(&memory).await.expect("failed to save memory");
+
+        embedding_table
+            .store(&memory.id, &embedding)
+            .await
+            .expect("failed to store embedding");
+
+        memory
+    }
+
+    #[tokio::test]
+    async fn prune_deletes_graph_rows_of_pruned_memory_only() {
+        let store = MemoryStore::connect_in_memory().await;
+
+        let embedding_table = crate::memory::MemoryVectorTable::new(store.pool().clone());
+
+        let doomed = create_aged_memory_with_embedding(
+            &store,
+            &embedding_table,
+            "stale note scheduled for pruning",
+            MemoryType::Fact,
+            0.05,
+            90,
+            vec![0.0; 384],
+        )
+        .await;
+
+        let survivor = create_aged_memory_with_embedding(
+            &store,
+            &embedding_table,
+            "important note that must survive pruning",
+            MemoryType::Fact,
+            0.9,
+            90,
+            vec![0.0; 384],
+        )
+        .await;
+
+        // Graph rows for both: the pruned entry's node, plus an incoming edge
+        // (survivor → doomed) and an outgoing edge (doomed → survivor) that both
+        // die with it. The survivor keeps its node and its own unrelated edge.
+        store.record_node(&doomed.id, "fact", None).await.unwrap();
+        store.record_node(&survivor.id, "fact", None).await.unwrap();
+        let bystander = create_aged_memory_with_embedding(
+            &store,
+            &embedding_table,
+            "bystander note unrelated to the pruned one",
+            MemoryType::Fact,
+            0.9,
+            90,
+            vec![0.0; 384],
+        )
+        .await;
+        store
+            .record_node(&bystander.id, "fact", None)
+            .await
+            .unwrap();
+        store
+            .record_edge(&survivor.id, &doomed.id, "supersedes")
+            .await
+            .unwrap();
+        store
+            .record_edge(&doomed.id, &survivor.id, "supersedes")
+            .await
+            .unwrap();
+        store
+            .record_edge(&survivor.id, &bystander.id, "supersedes")
+            .await
+            .unwrap();
+
+        let config = MaintenanceConfig {
+            prune_threshold: 0.1,
+            decay_rate: 0.0,
+            min_age_days: 30,
+            merge_similarity_threshold: 0.95,
+        };
+
+        let embedding_model = shared_embedding_model();
+        let report = run_maintenance(&store, &embedding_table, &embedding_model, &config)
+            .await
+            .expect("maintenance should succeed");
+
+        assert_eq!(report.pruned, 1, "only the stale memory should be pruned");
+
+        // The pruned memory itself is hard-deleted.
+        assert!(
+            store
+                .load(&doomed.id)
+                .await
+                .expect("failed to load pruned memory")
+                .is_none(),
+            "pruned memory should be gone"
+        );
+
+        // Its graph node and every edge touching it (either direction) are gone.
+        let doomed_nodes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_nodes WHERE entry_id = ?")
+                .bind(&doomed.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(doomed_nodes, 0, "pruned memory still has a graph node");
+
+        let doomed_edges: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM memory_edges WHERE src_entry_id = ? OR dst_entry_id = ?",
+        )
+        .bind(&doomed.id)
+        .bind(&doomed.id)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(doomed_edges, 0, "pruned memory still has graph edges");
+
+        // Unrelated graph rows are intact.
+        let survivor_nodes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_nodes WHERE entry_id = ?")
+                .bind(&survivor.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(survivor_nodes, 1, "survivor node must survive the prune");
+
+        let bystander_edge: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM memory_edges WHERE src_entry_id = ? AND dst_entry_id = ?",
+        )
+        .bind(&survivor.id)
+        .bind(&bystander.id)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            bystander_edge, 1,
+            "an edge between two surviving entries must not be reclaimed"
+        );
     }
 
     #[tokio::test]
