@@ -443,8 +443,16 @@ impl MemoryStore {
             return Ok(None);
         };
 
-        // 1. Explicit id-shaped tokens in the clause win: they are unambiguous.
-        let id_tokens = crate::memory::graph::id_tokens(&clause);
+        // 1. Explicit id-shaped tokens win: they are unambiguous. Ids appear
+        //    both after the cue ("supersedes the prior record `abc123`") and
+        //    before it ("fixed and shipped as `abc123`; supersedes that note"),
+        //    so scan the whole content but prefer tokens inside the clause.
+        let mut id_tokens = crate::memory::graph::id_tokens(&clause);
+        for token in crate::memory::graph::id_tokens(&memory.content) {
+            if !id_tokens.iter().any(|t| *t == token) {
+                id_tokens.push(token);
+            }
+        }
         if !id_tokens.is_empty() {
             let mut resolved = Vec::new();
             for token in id_tokens {

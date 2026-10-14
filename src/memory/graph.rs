@@ -19,8 +19,8 @@ const SUPERSEDE_CUES: &[&str] = &["supersedes", "superseded", "superseding"];
 /// a stopword list for retrieval.
 const STOPWORDS: &[&str] = &[
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "by", "with", "at", "from",
-    "earlier", "prior", "previous", "old", "older", "record", "note", "entry", "memory", "this",
-    "that", "it", "its", "was", "is", "are", "were", "has", "have", "had", "which", "whose",
+    "earlier", "prior", "previous", "old", "older", "record", "this", "that", "it", "its", "was",
+    "is", "are", "were", "has", "have", "had", "which", "whose",
 ];
 
 /// Return the text after the first supersede cue, or `None` when the entry
@@ -96,7 +96,7 @@ pub fn id_tokens(clause: &str) -> Vec<String> {
 pub fn significant_terms(clause: &str) -> Vec<String> {
     let mut terms = Vec::new();
     for word in clause
-        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|w| {
             w.trim_matches(|c: char| !c.is_alphanumeric())
                 .to_lowercase()
@@ -120,15 +120,11 @@ fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// An id-shaped token: at least 8 chars, all id chars, and not a plain English
-/// word (contains a digit or a hyphen/underscore). This keeps "20260818" and
-/// "e9ff9136" while rejecting "supersedes" and "dispatch-only".
+/// An id-shaped token: at least 8 chars, all id chars, and containing at least
+/// one ASCII digit. This keeps "20260818" and "e9ff9136" while rejecting plain
+/// English words and hyphenated prose such as "dispatch-only".
 fn is_id_shaped(token: &str) -> bool {
-    token.len() >= 8
-        && token.chars().all(is_id_char)
-        && token
-            .chars()
-            .any(|c| c.is_ascii_digit() || c == '-' || c == '_')
+    token.len() >= 8 && token.chars().all(is_id_char) && token.chars().any(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
