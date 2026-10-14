@@ -183,16 +183,15 @@ async fn prune_memories(
     for row in candidates {
         let id: String = row.try_get("id")?;
         check_maintenance_cancellation(maintenance_cancel_rx).await?;
-        // Prune is the only hard delete in the system, and the graph tables have
-        // no FK cascade (`memory_edges`/`memory_nodes` hold loose entry ids), so
-        // this is where their orphan rows get reclaimed. Consolidation only
-        // *forgets* an entry and must keep its graph rows: recall still walks
-        // supersedes edges through forgotten entries.
-        maintenance_cancelable_op(
-            maintenance_cancel_rx,
-            memory_store.delete_with_graph_cleanup(&id),
-        )
-        .await?;
+        // Prune is the only hard delete in the system. Every satellite table
+        // (`memory_vectors`, `human_identities`, `associations`, `memory_nodes`,
+        // `memory_edges`) carries `ON DELETE CASCADE` — the graph tables got real
+        // FKs in 20260819000001 — and the pool runs with `PRAGMA foreign_keys =
+        // ON`, so a plain delete reclaims them all. Consolidation only *forgets*
+        // an entry (an UPDATE), so no cascade fires and its graph/vector/identity
+        // rows survive: recall still walks supersedes edges through forgotten
+        // entries, and a forgotten anchor stays resolvable.
+        maintenance_cancelable_op(maintenance_cancel_rx, memory_store.delete(&id)).await?;
         pruned_count += 1;
     }
 
@@ -543,7 +542,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prune_deletes_graph_rows_of_pruned_memory_only() {
+    async fn prune_reclaims_all_satellite_rows_of_pruned_memory_only() {
         let store = MemoryStore::connect_in_memory().await;
 
         let embedding_table = crate::memory::MemoryVectorTable::new(store.pool().clone());
@@ -599,6 +598,22 @@ mod tests {
             .unwrap();
         store
             .record_edge(&survivor.id, &bystander.id, "supersedes")
+            .await
+            .unwrap();
+
+        // Human-identity anchors: the doomed memory carries two platform
+        // identities, the survivor one. A memory is its own anchor, so an
+        // identity row points straight at it (human_identities.memory_id).
+        store
+            .set_human_anchor("telegram:doomed-1", &doomed.id)
+            .await
+            .unwrap();
+        store
+            .set_human_anchor("discord:doomed-2", &doomed.id)
+            .await
+            .unwrap();
+        store
+            .set_human_anchor("telegram:survivor", &survivor.id)
             .await
             .unwrap();
 
@@ -665,6 +680,103 @@ mod tests {
         assert_eq!(
             bystander_edge, 1,
             "an edge between two surviving entries must not be reclaimed"
+        );
+
+        // The pruned entry's vector blob is gone (ON DELETE CASCADE now fires).
+        let doomed_vectors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_vectors WHERE memory_id = ?")
+                .bind(&doomed.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(doomed_vectors, 0, "pruned memory still has a vector row");
+
+        // Both identity rows anchored at the pruned memory are gone.
+        let doomed_identities: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM human_identities WHERE memory_id = ?")
+                .bind(&doomed.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            doomed_identities, 0,
+            "pruned memory still has human identity rows"
+        );
+
+        // Unrelated satellite rows survive.
+        let survivor_vectors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_vectors WHERE memory_id = ?")
+                .bind(&survivor.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(survivor_vectors, 1, "survivor vector must not be reclaimed");
+
+        let survivor_identities: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM human_identities WHERE memory_id = ?")
+                .bind(&survivor.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            survivor_identities, 1,
+            "survivor identity mapping must not be reclaimed"
+        );
+
+        // A *forgotten* (soft-deleted) entry is an UPDATE, not a DELETE, so no
+        // cascade fires and its whole satellite set survives — recall's
+        // supersedes walk depends on walking through forgotten entries.
+        let forgotten = create_aged_memory_with_embedding(
+            &store,
+            &embedding_table,
+            "forgotten anchor whose graph must survive",
+            MemoryType::Fact,
+            0.9,
+            90,
+            vec![0.0; 384],
+        )
+        .await;
+        store
+            .record_node(&forgotten.id, "fact", None)
+            .await
+            .unwrap();
+        store
+            .set_human_anchor("telegram:forgotten", &forgotten.id)
+            .await
+            .unwrap();
+        store.forget(&forgotten.id).await.unwrap();
+
+        let forgotten_vectors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_vectors WHERE memory_id = ?")
+                .bind(&forgotten.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            forgotten_vectors, 1,
+            "a forgotten memory must keep its vector row"
+        );
+
+        let forgotten_nodes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_nodes WHERE entry_id = ?")
+                .bind(&forgotten.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            forgotten_nodes, 1,
+            "a forgotten memory must keep its graph node"
+        );
+
+        let forgotten_identities: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM human_identities WHERE memory_id = ?")
+                .bind(&forgotten.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            forgotten_identities, 1,
+            "a forgotten memory must keep its identity row"
         );
     }
 

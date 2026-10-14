@@ -338,7 +338,9 @@ async fn open_skill_usage_store(
         );
     }
 
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}", db_path.display())).await?;
+    // Foreign keys ON (see spacebot::db::connect_sqlite): the agent schema's
+    // ON DELETE CASCADE constraints must actually fire.
+    let pool = spacebot::db::connect_sqlite(&format!("sqlite:{}", db_path.display())).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     Ok(spacebot::skills::SkillUsageStore::new(pool))
