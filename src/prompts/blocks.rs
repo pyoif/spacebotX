@@ -207,7 +207,6 @@ fn classify(name: &str) -> (BlockLayer, BlockStability, BlockSource) {
         "available_channels" => (Capabilities, Volatile, Store),
         "org_context" | "link_context" => (Capabilities, Epoch, Store),
         "project_context" => (Capabilities, Epoch, Store),
-        "knowledge_synthesis" => (Knowledge, Volatile, Synthesis),
         "working_memory" => (Working, Volatile, Synthesis),
         "channel_activity_map" => (Working, Volatile, Store),
         "participant_context" => (Working, Volatile, Store),

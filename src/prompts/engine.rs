@@ -91,7 +91,6 @@ impl PromptInputs {
 #[derive(Debug, Default, Clone)]
 pub struct ChannelPromptInputs {
     pub identity_context: Option<String>,
-    pub knowledge_synthesis: Option<String>,
     pub skills_prompt: Option<String>,
     pub worker_capabilities: String,
     pub conversation_context: Option<String>,
@@ -117,7 +116,6 @@ impl ChannelPromptInputs {
     fn into_inputs(self) -> PromptInputs {
         PromptInputs::new()
             .text("identity_context", self.identity_context)
-            .text("knowledge_synthesis", self.knowledge_synthesis)
             .text("skills_prompt", self.skills_prompt)
             .text("worker_capabilities", Some(self.worker_capabilities))
             .text("conversation_context", self.conversation_context)
@@ -1210,7 +1208,6 @@ mod tests {
 
         let filled = || ChannelPromptInputs {
             identity_context: Some("# Orion\n\nI work for Jamie.".to_string()),
-            knowledge_synthesis: Some("## Memory Store\n\nScope: global".to_string()),
             skills_prompt: Some("## Available Skills\n\n- deploy".to_string()),
             worker_capabilities: "## Worker Types\n\nBuiltin only.".to_string(),
             conversation_context: Some("Platform: telegram".to_string()),
@@ -1447,21 +1444,18 @@ mod tests {
 
     /// R3: the memory store is NOT part of the channel's cached system prompt.
     ///
-    /// The channel passes `knowledge_synthesis: None`; the store renders as the
-    /// first block of the volatile epilogue instead. This pins the property the
-    /// move exists for — a memory write must mutate zero bytes above the
-    /// conversation-history boundary — and a store block inside the system
-    /// prompt is precisely what violated it: the audit measured a full history
-    /// re-read (~12.8k fresh tokens) per write on the channel.
+    /// The channel prompt has no `knowledge_synthesis` variable at all; the
+    /// store renders as the first block of the volatile epilogue instead. This
+    /// pins the property the move exists for — a memory write must mutate zero
+    /// bytes above the conversation-history boundary — and a store block inside
+    /// the system prompt is precisely what violated it: the audit measured a
+    /// full history re-read (~12.8k fresh tokens) per write on the channel.
     #[test]
     fn channel_system_prompt_carries_no_memory_store_block() {
         let engine = PromptEngine::new("en").expect("prompt engine should build");
 
         let segmented = engine
-            .render_channel_prompt(ChannelPromptInputs {
-                knowledge_synthesis: None,
-                ..base_inputs(&engine)
-            })
+            .render_channel_prompt(base_inputs(&engine))
             .expect("segmented render");
 
         assert!(
@@ -1492,7 +1486,6 @@ mod tests {
         let segmented = engine
             .render_channel_prompt(ChannelPromptInputs {
                 identity_context: Some("# Orion\n\nI work for Jamie.".to_string()),
-                knowledge_synthesis: Some("## Memory Store\n\nScope: global".to_string()),
                 skills_prompt: Some("## Available Skills\n\n- deploy".to_string()),
                 worker_capabilities: "## Worker Types\n\nBuiltin only.".to_string(),
                 status_text: Some("No active processes.".to_string()),
@@ -1514,7 +1507,6 @@ mod tests {
 
         let identity = position("identity_context").expect("identity block present");
         let capabilities = position("worker_capabilities").expect("capabilities block present");
-        let memory = position("knowledge_synthesis").expect("memory block present");
         let status = position("status_text").expect("status block present");
         let chronicle = position("session_chronicle").expect("chronicle block present");
         let backfill = position("backfill_transcript").expect("backfill block present");
@@ -1527,8 +1519,8 @@ mod tests {
             position("conversation_context").expect("conversation context block present");
 
         assert!(
-            identity < capabilities && capabilities < memory,
-            "stable identity/capability blocks must precede the semi-volatile memory store: {identity} {capabilities} {memory}"
+            identity < capabilities,
+            "stable identity/capability blocks must precede semi-volatile blocks: {identity} {capabilities}"
         );
 
         // The chunk that changes every turn must sit BELOW the append-only
@@ -1538,14 +1530,9 @@ mod tests {
         // re-tokenizes every turn. This is the assertion that catches that
         // regression — the emitted order, not just the classification.
         //
-        // The chronicle sits as high as possible, above the semi-volatile
-        // memory store: it is the longest and fastest-growing append-only
-        // region, so every byte below it stays cached only while it remains
-        // the earliest mutable block.
-        assert!(
-            chronicle < memory,
-            "the append-only chronicle must precede the semi-volatile memory store, so the longest accreted region anchors the prefix: {chronicle} {memory}"
-        );
+        // The chronicle sits as high as possible among the accretions: it is the
+        // longest and fastest-growing append-only region, so every byte below it
+        // stays cached only while it remains the earliest mutable block.
         assert!(
             chronicle < backfill,
             "the chronicle must precede the backfill transcript (both append-only, chronicle first): {chronicle} {backfill}"
@@ -1746,12 +1733,11 @@ mod tests {
     }
 
     #[test]
-    fn renders_memory_store_and_gates_linked_agents() {
+    fn gates_linked_agents() {
         let engine = PromptEngine::new("en").expect("prompt engine should build");
         let render = |agent_links: bool| {
             engine
                 .render_channel_prompt(ChannelPromptInputs {
-                    knowledge_synthesis: Some("## Memory Store\n\nScope: global".to_string()),
                     agent_links,
                     ..base_inputs(&engine)
                 })
@@ -1760,7 +1746,6 @@ mod tests {
         };
 
         let unlinked = render(false);
-        assert!(unlinked.contains("## Memory Store"));
         assert!(
             !unlinked.contains("send_agent_message"),
             "linked-agent guidance must not render when no link tool is registered"

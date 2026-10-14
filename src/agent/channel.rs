@@ -3440,11 +3440,6 @@ impl Channel {
         let mut segmented =
             prompt_engine.render_channel_prompt(crate::prompts::ChannelPromptInputs {
                 identity_context: empty_to_none(identity_context),
-                // The memory store is NOT rendered into the cached system
-                // prompt: a write rewrote its bytes and truncated the prefix
-                // at that point. `build_volatile_epilogue` renders it as the
-                // first post-history block instead.
-                knowledge_synthesis: None,
                 skills_prompt: empty_to_none(skills_prompt),
                 worker_capabilities,
                 conversation_context: self.conversation_context.clone(),
