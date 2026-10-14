@@ -449,7 +449,7 @@ impl MemoryStore {
         //    so scan the whole content but prefer tokens inside the clause.
         let mut id_tokens = crate::memory::graph::id_tokens(&clause);
         for token in crate::memory::graph::id_tokens(&memory.content) {
-            if !id_tokens.iter().any(|t| *t == token) {
+            if !id_tokens.contains(&token) {
                 id_tokens.push(token);
             }
         }
@@ -1398,8 +1398,13 @@ mod tests {
             .unwrap();
         assert!(preds.contains(&older.id), "edge not captured: {preds:?}");
 
-        // Idempotent: a re-save does not duplicate the edge.
-        store.save(&newer).await.unwrap();
+        // Idempotent: recording the same edge again does not duplicate it
+        // (UNIQUE(src_entry_id, dst_entry_id, kind)). Re-save is avoided here
+        // because `save` is a plain INSERT and would trip the memories PK.
+        store
+            .record_edge(&newer.id, &older.id, "supersedes")
+            .await
+            .unwrap();
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_edges")
             .fetch_one(store.pool())
             .await
