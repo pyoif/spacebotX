@@ -4,9 +4,33 @@ use crate::error::Result;
 
 use anyhow::Context as _;
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
+
+/// Connect a SQLite pool with foreign-key enforcement ON.
+///
+/// SQLite enforces `ON DELETE CASCADE` only when `PRAGMA foreign_keys = ON`,
+/// which is a **per-connection** setting (it defaults to OFF). Every pool that
+/// opens a database whose schema relies on cascades — the per-agent `agent.db`
+/// and the instance `spacebot.db` — must go through here, or hard deletes will
+/// silently leave orphaned rows behind (the "graveyard": `memory_vectors`,
+/// `human_identities`, `associations`, `memory_nodes`, `memory_edges`).
+///
+/// Do not replace this with a bare `SqlitePool::connect` — that re-introduces
+/// the inert-cascade bug. See `migrations/20260819000001_fk_cascade_cleanup.sql`.
+pub async fn connect_sqlite(url: &str) -> Result<SqlitePool> {
+    let options = SqliteConnectOptions::from_str(url)
+        .with_context(|| format!("invalid SQLite url: {url}"))?
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .with_context(|| format!("failed to connect to SQLite: {url}"))?;
+    Ok(pool)
+}
 
 /// Database connections bundle for per-agent databases.
 pub struct Db {
@@ -34,7 +58,11 @@ impl Db {
             })?;
         }
         let sqlite_url = format!("sqlite:{}?mode=rwc", agent_db.display());
-        let sqlite = SqlitePool::connect(&sqlite_url)
+        // Foreign keys ON: the memory satellite tables (vectors, identities,
+        // associations, graph nodes/edges) rely on ON DELETE CASCADE to reclaim
+        // their rows when a memory is hard-deleted. A bare connect would leave
+        // the pragma OFF and leak orphans. See connect_sqlite.
+        let sqlite = connect_sqlite(&sqlite_url)
             .await
             .with_context(|| "failed to connect to SQLite")?;
 
@@ -86,7 +114,9 @@ pub async fn connect_instance_db(data_dir: &Path) -> Result<SqlitePool> {
     }
     let url = format!("sqlite:{}?mode=rwc", db_path.display());
 
-    let pool = SqlitePool::connect(&url).await.with_context(|| {
+    // Foreign keys ON, same rationale as the per-agent pool: the instance DB
+    // schema carries ON DELETE CASCADE constraints that must actually fire.
+    let pool = connect_sqlite(&url).await.with_context(|| {
         format!(
             "failed to connect to instance database: {}",
             db_path.display()
