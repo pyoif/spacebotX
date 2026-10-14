@@ -1826,6 +1826,23 @@ mod tests {
     }
 
     #[test]
+    fn chronicle_checkpoint_prompt_carries_the_anti_overlap_instruction() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+        let prompt = engine
+            .render_static_segmented("chronicle_checkpoint")
+            .expect("chronicle checkpoint prompt should render")
+            .text;
+        assert!(
+            prompt.contains("instead of restating them"),
+            "checkpoint prompt must tell the model not to restate settled store facts"
+        );
+        assert!(
+            prompt.contains("Do not duplicate Working Memory's raw event detail"),
+            "checkpoint prompt must tell the model not to duplicate today's WM detail"
+        );
+    }
+
+    #[test]
     fn autonomy_channel_prompt_renders_per_level() {
         let engine = PromptEngine::new("en").expect("prompt engine should build");
 
