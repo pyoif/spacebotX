@@ -383,6 +383,20 @@ impl MemorySearch {
             SearchMode::Typed => self.metadata_search(config.sort_by, config).await,
         }?;
 
+        // Supersedes-chain suppression: with the final candidate set in hand,
+        // walk `supersedes` edges backwards (transitively) from each survivor and
+        // drop any transitive predecessor. A stale entry that ranks independently
+        // must not surface as current when its successor is already in the
+        // results. See migrations/20260818000001_memory_graph.sql.
+        let suppressed = self.suppressed_predecessors(&results).await?;
+        if !suppressed.is_empty() {
+            results.retain(|r| !suppressed.contains(&r.memory.id));
+            // Ranks were positional; renumber so the output stays 1..n.
+            for (i, result) in results.iter_mut().enumerate() {
+                result.rank = i + 1;
+            }
+        }
+
         // Chronicle range join (1.7): annotate each result with the level-0
         // checkpoint whose span produced this memory, when the memory has a
         // channel and a covering checkpoint exists.
@@ -415,6 +429,43 @@ impl MemorySearch {
         }
 
         Ok(results)
+    }
+
+    /// Compute the set of entry ids to suppress from a candidate result set,
+    /// given the `supersedes` edges recorded in `memory_edges`.
+    ///
+    /// For every surviving result we collect its transitive supersedes
+    /// predecessors; the union is what must not surface as current. An entry is
+    /// never suppressed by its own chain (the walk excludes the start), and an
+    /// entry that is itself a *successor* in the set is kept — only predecessors
+    /// go. When the edges table is empty this is a cheap no-op.
+    async fn suppressed_predecessors(
+        &self,
+        results: &[MemorySearchResult],
+    ) -> Result<std::collections::HashSet<String>> {
+        let mut suppressed = std::collections::HashSet::new();
+        if results.is_empty() {
+            return Ok(suppressed);
+        }
+        for result in results {
+            let preds = self
+                .store
+                .transitive_superseded_predecessors(&result.memory.id)
+                .await?;
+            suppressed.extend(preds);
+        }
+
+        // Dedupe safety: if both an entry and its successor are in the top-k, the
+        // predecessor is suppressed by the rule above; but never suppress an id
+        // that is also a *current* result's successor-of-nothing. Concretely, we
+        // re-add any id that appears as a successor (src) of a suppressed edge,
+        // i.e. anything present in the results as a survivor wins over the walk.
+        if !suppressed.is_empty() {
+            for result in results {
+                suppressed.remove(&result.memory.id);
+            }
+        }
+        Ok(suppressed)
     }
 
     /// Metadata-based search: queries SQLite directly, no vector/FTS/RRF.
