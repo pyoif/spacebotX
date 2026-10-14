@@ -1043,29 +1043,35 @@ mod tests {
         // Two checkpoints: one carries the query token in its title, the other
         // only in its (longer) summary. With per-column bm25 weighting the title
         // hit must outrank the summary hit.
-        for (id, title, summary) in [
+        // `covers_to_seq` must be distinct per row: the (channel_id, level,
+        // covers_to_seq) boundary index is unique, and its DEFAULT of 0 would
+        // make two same-level checkpoints in one channel collide.
+        for (id, title, summary, covers_to_seq) in [
             (
                 "cp-title",
                 "caching strategy",
                 "a long span about unrelated things",
+                1,
             ),
             (
                 "cp-summary",
                 "unrelated heading",
                 "this span discussed caching at length across many paragraphs and many more words besides",
+                2,
             ),
         ] {
             sqlx::query(
                 r#"
                 INSERT INTO channel_chronicle_checkpoints
                     (id, channel_id, seq, level, kind, title, summary,
-                     covers_from_at, covers_to_at, message_count, token_estimate)
-                VALUES (?, 'chan-1', 1, 0, 'interval', ?, ?, '2026-01-01', '2026-01-02', 1, 10)
+                     covers_from_at, covers_to_at, covers_to_seq, message_count, token_estimate)
+                VALUES (?, 'chan-1', 1, 0, 'interval', ?, ?, '2026-01-01', '2026-01-02', ?, 1, 10)
                 "#,
             )
             .bind(id)
             .bind(title)
             .bind(summary)
+            .bind(covers_to_seq)
             .execute(&pool)
             .await
             .expect("insert checkpoint");
