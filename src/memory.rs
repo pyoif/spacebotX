@@ -3,6 +3,7 @@
 pub mod analyzer;
 pub mod consolidation;
 pub mod embedding;
+pub mod graph;
 pub mod maintenance;
 pub mod render;
 pub mod search;

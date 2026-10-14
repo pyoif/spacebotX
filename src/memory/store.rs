@@ -91,6 +91,13 @@ impl MemoryStore {
         .await
         .with_context(|| format!("failed to save memory {}", memory.id))?;
 
+        // Graph capture: if this entry's text names an earlier entry it
+        // supersedes, record a `supersedes` edge + node rows. Best-effort and
+        // non-fatal — a graph write must never fail a memory save.
+        if let Err(error) = self.capture_supersedes_edges(memory).await {
+            tracing::debug!(%error, memory_id = %memory.id, "supersedes edge capture failed");
+        }
+
         // R7-lite: a new memory rewrites the store block inside the cached
         // prefix, so the next request's cache miss is attributable to this.
         crate::llm::cache_stats::tag(crate::llm::cache_stats::CacheEvent::MemoryWrite);
@@ -320,6 +327,167 @@ impl MemoryStore {
         })?;
 
         Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // Graph memory: nodes + edges + supersedes-chain traversal
+    // ---------------------------------------------------------------------
+
+    /// Record a directed graph edge between two memory entries (upsert on the
+    /// `(src, dst, kind)` unique key, so capture is idempotent).
+    pub async fn record_edge(
+        &self,
+        src_entry_id: &str,
+        dst_entry_id: &str,
+        kind: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO memory_edges (src_entry_id, dst_entry_id, kind)
+            VALUES (?, ?, ?)
+            ON CONFLICT(src_entry_id, dst_entry_id, kind) DO NOTHING
+            "#,
+        )
+        .bind(src_entry_id)
+        .bind(dst_entry_id)
+        .bind(kind)
+        .execute(&self.pool)
+        .await
+        .with_context(|| {
+            format!("failed to record edge {src_entry_id} -[{kind}]-> {dst_entry_id}")
+        })?;
+        Ok(())
+    }
+
+    /// Upsert a graph node for an entry (idempotent on the unique `entry_id`).
+    pub async fn record_node(&self, entry_id: &str, kind: &str, label: Option<&str>) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO memory_nodes (entry_id, kind, label)
+            VALUES (?, ?, ?)
+            ON CONFLICT(entry_id) DO UPDATE SET
+                kind = excluded.kind
+            "#,
+        )
+        .bind(entry_id)
+        .bind(kind)
+        .bind(label)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("failed to record node for entry {entry_id}"))?;
+        Ok(())
+    }
+
+    /// Collect all transitive `supersedes` predecessors of `entry_id` by walking
+    /// the `memory_edges` table backwards with a recursive CTE. The returned set
+    /// excludes `entry_id` itself.
+    pub async fn transitive_superseded_predecessors(
+        &self,
+        entry_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows = sqlx::query(
+            r#"
+            WITH RECURSIVE preds(entry_id) AS (
+                SELECT dst_entry_id
+                  FROM memory_edges
+                 WHERE src_entry_id = ? AND kind = 'supersedes'
+                UNION
+                SELECT e.dst_entry_id
+                  FROM memory_edges e
+                  JOIN preds p ON e.src_entry_id = p.entry_id
+                 WHERE e.kind = 'supersedes'
+            )
+            SELECT entry_id FROM preds
+            "#,
+        )
+        .bind(entry_id)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("failed to walk supersedes chain from {entry_id}"))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("entry_id"))
+            .collect())
+    }
+
+    /// Best-effort capture of `supersedes` edges from a newly saved entry's text.
+    ///
+    /// The store's supersede annotations are prose (e.g. "Supersedes the earlier
+    /// dispatch-only note" or "supersedes the prior record `abc123`"), so this is
+    /// a pragmatic heuristic, not a parser for a formal grammar: it finds a
+    /// `supersedes`/`superseded` cue and resolves it to a predecessor entry — by
+    /// an explicit id-shaped token if one is present, otherwise by matching the
+    /// entries' shared significant terms against the cue's trailing clause.
+    async fn capture_supersedes_edges(&self, memory: &Memory) -> Result<()> {
+        let Some(predecessors) = self.resolve_supersede_targets(memory).await? else {
+            return Ok(());
+        };
+        if predecessors.is_empty() {
+            return Ok(());
+        }
+
+        self.record_node(&memory.id, &memory.memory_type.to_string(), None)
+            .await?;
+        for pred in predecessors {
+            self.record_node(&pred, "fact", None).await?;
+            self.record_edge(&memory.id, &pred, "supersedes").await?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the predecessor entry ids named by a supersede cue in `memory.id`'s
+    /// text. `None` means "no supersede cue at all" (the common case).
+    async fn resolve_supersede_targets(&self, memory: &Memory) -> Result<Option<Vec<String>>> {
+        let Some(clause) = crate::memory::graph::supersede_clause(&memory.content) else {
+            return Ok(None);
+        };
+
+        // 1. Explicit id-shaped tokens win: they are unambiguous. Ids appear
+        //    both after the cue ("supersedes the prior record `abc123`") and
+        //    before it ("fixed and shipped as `abc123`; supersedes that note"),
+        //    so scan the whole content but prefer tokens inside the clause.
+        let mut id_tokens = crate::memory::graph::id_tokens(&clause);
+        for token in crate::memory::graph::id_tokens(&memory.content) {
+            if !id_tokens.contains(&token) {
+                id_tokens.push(token);
+            }
+        }
+        if !id_tokens.is_empty() {
+            let mut resolved = Vec::new();
+            for token in id_tokens {
+                if token == memory.id {
+                    continue;
+                }
+                if self.load(&token).await?.is_some() {
+                    resolved.push(token);
+                }
+            }
+            if !resolved.is_empty() {
+                return Ok(Some(resolved));
+            }
+        }
+
+        // 2. Otherwise match the clause's significant terms against recent entries.
+        let terms = crate::memory::graph::significant_terms(&clause);
+        if terms.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let candidates = self.get_sorted(SearchSort::Recent, 50, None).await?;
+        let mut resolved = Vec::new();
+        for candidate in candidates {
+            if candidate.id == memory.id || candidate.forgotten {
+                continue;
+            }
+            let haystack = candidate.content.to_lowercase();
+            let overlap = terms.iter().filter(|t| haystack.contains(*t)).count();
+            // Require a meaningful overlap so a stray common word cannot link
+            // unrelated entries. Two distinct terms is the floor.
+            if overlap >= 2 && overlap * 2 >= terms.len() {
+                resolved.push(candidate.id);
+            }
+        }
+        Ok(Some(resolved))
     }
 
     /// Get all associations for a memory (both incoming and outgoing).
@@ -1167,5 +1335,137 @@ mod tests {
         assert_eq!(watermark_eviction_window(2, 2), 2);
         assert_eq!(watermark_eviction_window(3, 2), 1);
         assert_eq!(watermark_eviction_window(4, 2), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Graph memory: nodes, edges, supersedes-chain traversal
+    // -----------------------------------------------------------------
+
+    /// (a) The new migration applies on the real migration set: in-memory test
+    /// DBs run every file in `migrations/`, so a present-and-empty graph table
+    /// proves `20260818000001_memory_graph.sql` applied.
+    #[tokio::test]
+    async fn memory_graph_tables_exist_after_migration() {
+        let store = MemoryStore::connect_in_memory().await;
+
+        let nodes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_nodes")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_edges")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(nodes, 0);
+        assert_eq!(edges, 0);
+
+        // The dst index recall depends on is present.
+        let idx: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_memory_edges_dst'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    /// (b) A superseding write captures an edge. The predecessor is named by an
+    /// explicit id token in the prose, which is the unambiguous path.
+    #[tokio::test]
+    async fn superseding_write_captures_edge() {
+        let store = MemoryStore::connect_in_memory().await;
+
+        let mut older = Memory::new("dispatch-only note about the utf8 panic", MemoryType::Fact);
+        older.id = "aaaabbbb1111".to_string();
+        store.save(&older).await.unwrap();
+        assert!(
+            store
+                .transitive_superseded_predecessors(&older.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let newer = Memory::new(
+            "utf8 panic fixed and shipped as `aaaabbbb1111`; supersedes that note",
+            MemoryType::Fact,
+        );
+        store.save(&newer).await.unwrap();
+
+        let preds = store
+            .transitive_superseded_predecessors(&newer.id)
+            .await
+            .unwrap();
+        assert!(preds.contains(&older.id), "edge not captured: {preds:?}");
+
+        // Idempotent: recording the same edge again does not duplicate it
+        // (UNIQUE(src_entry_id, dst_entry_id, kind)). Re-save is avoided here
+        // because `save` is a plain INSERT and would trip the memories PK.
+        store
+            .record_edge(&newer.id, &older.id, "supersedes")
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_edges")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// (c) Transitive suppression A→B→C: from C the walk collects both A and B.
+    #[tokio::test]
+    async fn supersedes_chain_is_transitive() {
+        let store = MemoryStore::connect_in_memory().await;
+
+        let mut a = Memory::new("entry alpha base record", MemoryType::Fact);
+        a.id = "aaaa1111aaaa".to_string();
+        store.save(&a).await.unwrap();
+
+        let b = Memory::new(
+            "entry beta replaces it; supersedes `aaaa1111aaaa`",
+            MemoryType::Fact,
+        );
+        store.save(&b).await.unwrap();
+
+        let c = Memory::new(
+            format!("entry gamma is final; supersedes `{}`", b.id),
+            MemoryType::Fact,
+        );
+        store.save(&c).await.unwrap();
+
+        let preds = store
+            .transitive_superseded_predecessors(&c.id)
+            .await
+            .unwrap();
+        assert!(
+            preds.contains(&a.id),
+            "A missing from C's predecessors: {preds:?}"
+        );
+        assert!(
+            preds.contains(&b.id),
+            "B missing from C's predecessors: {preds:?}"
+        );
+        assert!(!preds.contains(&c.id), "C must not supersede itself");
+    }
+
+    /// (d) Normal entries are unaffected when the edges table is empty.
+    #[tokio::test]
+    async fn no_edges_means_no_suppression() {
+        let store = MemoryStore::connect_in_memory().await;
+
+        let plain = Memory::new("an ordinary unrelated fact", MemoryType::Fact);
+        store.save(&plain).await.unwrap();
+
+        let preds = store
+            .transitive_superseded_predecessors(&plain.id)
+            .await
+            .unwrap();
+        assert!(preds.is_empty());
+
+        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_edges")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(edges, 0);
     }
 }

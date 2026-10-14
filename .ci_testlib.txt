@@ -1,0 +1,1756 @@
+﻿2026-10-11T06:09:39.1604789Z ##[group]Run cargo test --lib
+[36;1mcargo test --lib[0m
+shell: /usr/bin/bash -e {0}
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  CARGO_HOME: /home/runner/.cargo
+  CARGO_INCREMENTAL: 0
+  CACHE_ON_FAILURE: false
+##[endgroup]
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m imap-proto v0.10.2 (/home/runner/work/spacebotX/spacebotX/vendor/imap-proto-0.10.2)
+[1m[92m   Compiling[0m spacebot v0.5.0 (/home/runner/work/spacebotX/spacebotX)
+[1m[92m   Compiling[0m imap v2.4.1
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 2m 05s
+[1m[33mwarning[0m: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+[1m[92mnote[0m: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/spacebot-3546ccec8a73f6b3)
+
+running 1457 tests
+test agent::autonomy::tests::due_requires_level_on ... ok
+test agent::autonomy::tests::due_respects_active_hours ... ok
+test agent::autonomy::tests::autonomy_doorbell_coalesces_while_pending ... ok
+test agent::autonomy::tests::heartbeat_admission_stops_when_dial_or_ceiling_is_off ... ok
+test agent::autonomy::tests::interval_elapse_makes_the_run_due ... ok
+test agent::autonomy::tests::pending_wake_events_pull_the_run_forward ... ok
+test agent::autonomy::tests::autonomy_transitions_serialize_with_admission ... ok
+test agent::autonomy::tests::task_visibility_follows_assignment_and_claim_flag ... ok
+test agent::autonomy::tests::stale_worker_operation_cannot_settle_later_child ... ok
+test agent::branch::tests::branch_terminal_status_matches_legacy_conclusion_prefixes ... ok
+test agent::branch::tests::delegated_branch_conclusion_is_deterministic ... ok
+test agent::channel::tests::available_channels_filter_excludes_link_platform ... ok
+test agent::channel::tests::branch_working_memory_event_records_cancellation_as_error ... ok
+test agent::channel::tests::branch_working_memory_event_records_sentence_cancellation_as_error ... ok
+test agent::channel::tests::channel_coalesce_ignores_unrelated_compaction_events ... ok
+test agent::channel::tests::channel_coalesce_ignores_unrelated_memory_saved_events ... ok
+test agent::channel::tests::channel_coalesce_processes_related_branch_events ... ok
+test agent::channel::tests::channel_coalesce_processes_related_worker_events ... ok
+test agent::channel::tests::channel_event_loop_continues_after_lagged_broadcast ... ok
+test agent::channel::tests::channel_event_loop_stops_when_event_bus_closes ... ok
+test agent::channel::tests::conversational_event_summary_extracts_blocked_on_prefix ... ok
+test agent::channel::tests::conversational_event_summary_extracts_constraint_prefix_case_insensitively ... ok
+test agent::channel::tests::conversational_event_summary_extracts_deadline_prefix ... ok
+test agent::channel::tests::conversational_event_summary_extracts_outcome_prefix ... ok
+test agent::channel::tests::conversational_event_summary_falls_back_to_default_type ... ok
+test agent::channel::tests::conversational_event_summary_is_case_insensitive_across_prefixes ... ok
+test agent::channel::tests::conversational_event_summary_treats_empty_prefixed_content_as_empty_summary ... ok
+test agent::channel::tests::decision_user_id_skips_retrigger_messages ... ok
+test agent::channel::tests::discord_quiet_mode_ping_ack_requires_directed_ping ... ok
+test agent::channel::tests::duplicate_worker_outcome_version_is_consumed_once_without_handle_state ... ok
+test agent::channel::tests::extracts_decision_summary_from_reply_text ... ok
+test agent::autonomy::tests::finish_waits_for_owned_children ... ok
+test agent::channel::tests::is_dm_conversation_id_detects_dm_patterns ... ok
+test agent::channel::tests::quiet_mode_fallback_requires_directed_skipped_turn_without_reply ... ok
+test agent::channel::tests::quiet_mode_invocation_uses_discord_mention_and_reply_metadata ... ok
+test agent::channel::tests::reflection_signal_carries_failed_predecessors_of_a_success ... ok
+test agent::channel::tests::reflection_signal_fires_on_turn_work_alone ... ok
+test agent::autonomy::tests::wake_claim_rolls_back_when_epoch_is_not_active ... ok
+test agent::channel::tests::reflection_signal_ignores_repeat_completions ... ok
+test agent::channel::tests::reflection_signal_records_failed_workers_without_firing ... ok
+test agent::channel::tests::worker_complete_event_ignored_for_other_channel ... ok
+test agent::channel::tests::worker_complete_event_matches_own_channel ... ok
+test agent::channel::tests::worker_complete_event_ignored_when_no_channel ... ok
+test agent::channel_dispatch::tests::blocked_outcome_is_classified_as_unsuccessful ... ok
+test agent::autonomy::tests::stale_generation_cannot_clear_current_epoch ... ok
+test agent::channel_dispatch::tests::cancelled_errors_are_classified_as_cancelled_results ... ok
+test agent::channel_dispatch::tests::a_cancel_racing_a_completion_records_what_was_committed ... ok
+test agent::channel_dispatch::tests::a_timeout_racing_a_cancel_records_what_was_committed ... ok
+test agent::channel_dispatch::tests::dropping_parent_control_does_not_cancel_worker ... ok
+test agent::channel_dispatch::tests::partial_outcome_is_classified_as_successful ... ok
+test agent::channel_dispatch::tests::forced_cancellation_converges_durable_state_and_publishes_completion ... ok
+test agent::channel_dispatch::tests::origin_cleanup_waits_for_worker_terminalization ... ok
+test agent::channel_dispatch::tests::restored_idle_worker_runs_after_gate_without_leaving_idle_state ... ok
+test agent::channel_dispatch::tests::task_context_is_appended_to_the_worker_message ... ok
+test agent::channel_dispatch::tests::spawn_worker_task_carries_channel_id ... ok
+test agent::channel_dispatch::tests::timeout_outcome_is_classified_as_unsuccessful ... ok
+test agent::channel_dispatch::tests::timeout_outcome_relays_recovered_work ... ok
+test agent::channel_dispatch::tests::spawn_worker_task_emits_cancelled_completion_event ... ok
+test agent::channel_history::tests::completion_error_rolls_back ... ok
+test agent::channel_history::tests::count_tool_call_messages_counts_only_tool_call_assistants ... ok
+test agent::channel_history::tests::event_filter_scopes_agent_message_events_by_channel ... ok
+test agent::channel_history::tests::event_filter_scopes_tool_events_by_channel ... ok
+test agent::channel_history::tests::failed_retrigger_reply_is_not_preserved_as_delivered_text ... ok
+test agent::channel_history::tests::format_batched_message_includes_absolute_and_relative_time ... ok
+test agent::channel_history::tests::format_batched_message_uses_placeholder_for_empty_text ... ok
+test agent::channel_history::tests::format_user_message_handles_empty_text ... ok
+test agent::channel_history::tests::history_persists_plain_text_not_the_turn_envelope ... ok
+test agent::channel_history::tests::max_turns_retrigger_without_reply_discards_scaffolding ... ok
+test agent::channel_history::tests::max_turns_writes_history_back ... ok
+test agent::channel_history::tests::message_display_name_uses_consistent_fallback_order ... ok
+test agent::channel_history::tests::next_turn_is_clean_after_prompt_cancelled ... ok
+test agent::channel_history::tests::ok_writes_history_back ... ok
+test agent::channel_history::tests::prompt_cancelled_extracts_reply_discards_tool_results ... ok
+test agent::channel_history::tests::prompt_cancelled_preserves_only_first_user_prompt ... ok
+test agent::channel_history::tests::prompt_cancelled_preserves_user_and_reply ... ok
+test agent::channel_history::tests::prompt_cancelled_retrigger_preserves_reply_only ... ok
+test agent::channel_history::tests::prompt_cancelled_retrigger_without_reply_discards_scaffolding ... ok
+test agent::channel_history::tests::rollback_on_empty_history_is_noop ... ok
+test agent::channel_history::tests::rollback_when_nothing_appended_is_noop ... ok
+test agent::channel_history::tests::successful_retrigger_without_reply_discards_scaffolding ... ok
+test agent::channel_history::tests::temporal_context_uses_cron_timezone_when_user_timezone_is_invalid ... ok
+test agent::channel_history::tests::text_delta_events_are_filtered_by_channel_id ... ok
+test agent::channel_history::tests::tool_error_rolls_back ... ok
+test agent::channel_history::tests::with_time_envelope_prepends_clock_line ... ok
+test agent::channel_history::tests::worker_system_info_render_includes_time_and_model ... ok
+test agent::chronicle::tests::a_cut_between_a_call_and_its_result_moves_past_the_result ... ok
+test agent::chronicle::tests::a_cut_on_a_turn_boundary_is_left_alone ... ok
+test agent::chronicle::tests::a_floor_clamped_cut_does_not_strand_a_tool_result ... FAILED
+test agent::chronicle::tests::a_head_mutation_from_either_mode_invalidates_an_in_flight_cut ... ok
+test agent::chronicle::tests::a_history_of_only_results_yields_no_cut_within_its_ceiling ... ok
+test agent::chronicle::tests::a_mode_switch_invalidates_an_in_flight_cut ... ok
+test agent::chronicle::tests::a_panicking_cut_releases_the_in_flight_flag ... ok
+test agent::chronicle::tests::a_run_of_results_past_the_ceiling_yields_no_cut ... ok
+test agent::chronicle::tests::an_absurd_recent_window_does_not_panic_the_view ... FAILED
+test agent::chronicle::tests::bootstrap_prompt_warns_about_truncated_past ... ok
+test agent::chronicle::tests::consecutive_stranded_results_are_all_dropped ... ok
+test agent::chronicle::tests::cut_context_trims_live_history_to_the_covered_turn_boundary ... FAILED
+test agent::chronicle::tests::cut_prompt_marks_prior_checkpoints_as_context_only ... ok
+test agent::chronicle::tests::long_titles_are_truncated ... ok
+test agent::chronicle::tests::parse_response_rejects_title_without_body ... ok
+test agent::chronicle::tests::parse_response_splits_title_from_body ... ok
+test agent::chronicle::tests::parse_response_without_title_keeps_whole_body ... ok
+test agent::chronicle::tests::rebasing_forgets_consumed_turns_and_shifts_the_rest ... ok
+test agent::chronicle::tests::recorded_turns_are_bounded ... ok
+test agent::chronicle::tests::request_budget_counts_the_prompt_and_the_response_reserve ... ok
+test agent::channel_dispatch::tests::terminal_commit_retry_exhaustion_leaves_missing_row_unavailable ... ok
+test agent::chronicle::tests::transcript_render_includes_sender_and_time ... ok
+test agent::chronicle::tests::trim_is_abandoned_when_the_head_moved_during_the_cut ... FAILED
+test agent::chronicle::tests::trimming_lands_only_on_a_covered_turn_boundary ... ok
+test agent::chronicle::tests::view_budget_is_monotone ... ok
+test agent::chronicle::tests::view_collapses_oldest_first_under_budget ... ok
+test agent::chronicle::tests::view_header_reports_session_shape ... ok
+test agent::chronicle::tests::view_includes_older_checkpoints_outside_the_recent_window ... FAILED
+test agent::chronicle::tests::view_is_absent_before_the_first_checkpoint ... FAILED
+test agent::chronicle::tests::the_mutation_lock_serializes_emergency_and_cuts ... ok
+test agent::chronicle::tests::view_never_exceeds_its_budget_and_discloses_omissions ... ok
+test agent::compactor::tests::aligned_fractional_cut_never_drains_past_the_floor ... ok
+test agent::compactor::tests::aligned_fractional_cut_never_lands_on_a_tool_result ... ok
+test agent::compactor::tests::aligned_fractional_cut_respects_the_retain_floor ... ok
+test agent::compactor::tests::estimate_text_tokens_rounds_up ... ok
+test agent::compactor::tests::precompact_budget_tracks_the_measured_prompt ... ok
+test agent::compactor::tests::precompact_drains_until_under_budget ... ok
+test agent::compactor::tests::precompact_handles_prompt_larger_than_the_window ... ok
+test agent::compactor::tests::precompact_keeps_oversized_recent_message ... ok
+test agent::compactor::tests::precompact_never_strands_a_tool_result_at_the_front ... ok
+test agent::chronicle::tests::view_is_reproducible_from_durable_state_alone ... FAILED
+test agent::compactor::tests::precompact_noop_at_exact_budget ... ok
+test agent::compactor::tests::precompact_noop_under_budget ... ok
+test agent::compactor::tests::precompact_trims_one_token_over_budget ... ok
+test agent::cortex::tests::breaker_trips_only_for_structured_failures_and_resets_on_success ... ok
+test agent::cortex::tests::cancelled_warmup_demotes_warming_state_to_degraded ... ok
+test agent::cortex::tests::cancelled_warmup_does_not_override_terminal_state ... ok
+test agent::compactor::tests::precompact_stops_at_retention_floor ... ok
+test agent::cortex::tests::initial_warmup_completion_detected_when_status_has_refresh_timestamp ... ok
+test agent::cortex::tests::initial_warmup_completion_not_detected_when_timestamp_exists_but_state_is_not_warm ... ok
+test agent::cortex::tests::initial_warmup_completion_not_detected_without_refresh_timestamp ... ok
+test agent::cortex::tests::maintenance_task_timeout_bounds ... ok
+test agent::cortex::tests::maintenance_timeout_action_progresses_from_none_to_cancel_to_abort ... ok
+test agent::cortex::tests::memory_receiver_closed_disables_stream_without_stopping_loop ... ok
+test agent::cortex::tests::memory_receiver_lagged_continues_loop_and_tracks_drop_count ... ok
+test agent::cortex::tests::parse_structured_success_flag_requires_json_object_bool ... ok
+test agent::cortex::tests::push_signal_into_buffer_coalesces_status_updates_for_same_process ... ok
+test agent::cortex::tests::push_signal_into_buffer_keeps_distinct_status_updates ... ok
+test agent::cortex::tests::run_warmup_once_semantics_enabled_runs_without_force ... ok
+test agent::cortex::tests::run_warmup_once_semantics_force_overrides_disabled_config ... ok
+test agent::cortex::tests::run_warmup_once_semantics_skip_when_disabled_without_force ... ok
+test agent::cortex::tests::signal_from_event_handles_every_process_event_variant ... ok
+test agent::cortex::tests::signal_from_event_maps_memory_saved_values ... ok
+test agent::cortex::tests::summarize_signal_text_truncates_long_text ... ok
+test agent::cortex::tests::summarize_signal_text_uses_first_non_empty_line ... ok
+test agent::cortex::tests::synthesis_task_failure_backs_off_before_respawn ... ok
+test agent::cortex::tests::working_memory_synthesis_task_is_single_flight ... ok
+test agent::cortex_chat::tests::preview_utf8_keeps_short_text ... ok
+test agent::cortex_chat::tests::preview_utf8_truncates_on_char_boundary ... ok
+test agent::cortex_chat::tests::resolve_lifecycle_call_id_falls_back_to_internal_call_id ... ok
+test agent::cortex_chat::tests::resolve_lifecycle_call_id_prefers_tool_call_id ... ok
+test agent::channel_dispatch::tests::worker_completion_is_durable_before_notification ... ok
+test agent::cortex_chat::tests::send_lock_returns_busy_when_already_held ... ok
+test agent::cortex_chat::tests::tracked_completion_rejects_stale_registration_and_operation ... ok
+test agent::cortex_chat::tests::send_lock_released_after_timeout_path ... ok
+test agent::inbound_relay::tests::enqueue_does_not_block_on_full_channel_queue ... ok
+test agent::inbound_relay::tests::preserves_fifo_order_through_pressure ... ok
+test agent::inbound_relay::tests::returns_message_on_relay_shutdown ... ok
+test agent::inbound_relay::tests::send_fails_once_channel_receiver_is_gone ... ok
+test agent::ingestion::tests::test_chunk_text_empty ... ok
+test agent::ingestion::tests::test_chunk_text_handles_long_line ... ok
+test agent::ingestion::tests::test_chunk_text_small_input ... ok
+test agent::ingestion::tests::test_chunk_text_splits_at_lines ... ok
+test agent::ingestion::tests::test_content_hash_deterministic ... ok
+test agent::ingestion::tests::test_content_hash_differs_for_different_content ... ok
+test agent::ingestion::tests::test_failure_flag_prevents_delete ... ok
+test agent::ingestion::tests::test_is_supported_ingest_file ... ok
+test agent::ingestion::tests::test_max_turns_classified_as_chunk_failure ... ok
+test agent::ingestion::tests::test_success_flag_allows_delete ... ok
+test agent::invariant_harness::deterministic_cortex_single_flight_invariant ... ok
+test agent::invariant_harness::deterministic_event_receiver_invariant ... ok
+test agent::invariant_harness::deterministic_failure_classification_invariant ... ok
+test agent::invariant_harness::deterministic_retry_budget_invariant - should panic ... ok
+test agent::invariant_harness::deterministic_worker_limit_invariant ... ok
+test agent::invariant_harness::seeded_fault_sequence_preserves_invariants ... ok
+test agent::inbound_relay::tests::depth_accounting_survives_concurrent_drain ... ok
+test agent::process_control::tests::cancel_missing_entries_is_idempotent_not_found ... ok
+test agent::process_control::tests::cancel_stale_channel_entry_prunes_then_returns_not_found ... ok
+test agent::process_control::tests::cancellation_backstop_does_not_abort_supervisor_or_remove_registration ... ok
+test agent::process_control::tests::accepted_cancellation_racing_success_cannot_commit_success ... ok
+test agent::process_control::tests::close_admission_fences_reservation_promotion ... ok
+test agent::process_control::tests::close_admission_rejects_new_reservations_idempotently ... ok
+test agent::process_control::tests::concurrent_idle_follow_ups_claim_worker_once ... ok
+test agent::process_control::tests::cross_channel_follow_up_keeps_origin_and_targets_requester ... ok
+test agent::process_control::tests::duplicate_worker_registration_is_rejected ... ok
+test agent::process_control::tests::empty_interactive_results_have_explicit_settlement_markers ... ok
+test agent::process_control::tests::normalized_tasks_are_exclusive_across_origin_channels ... ok
+test agent::process_control::tests::origin_channel_quotas_are_independent ... ok
+test agent::process_control::tests::origin_cleanup_cancels_only_matching_workers_and_releases_reservations ... ok
+test agent::process_control::tests::prune_dead_channels_removes_stale_entries ... ok
+test agent::process_control::tests::releasing_reservation_cleans_task_and_quota_ownership ... ok
+test agent::process_control::tests::restoration_requires_previous_registration_to_detach ... ok
+test agent::process_control::tests::restored_idle_worker_installs_execution_abort_handle_without_state_change ... ok
+test agent::process_control::tests::cancellation_retries_when_durable_lifecycle_trails_runtime_state ... ok
+test agent::process_control::tests::stale_channel_entry_cleanup_only_removes_matching_registration_id ... ok
+test agent::process_control::tests::stale_operation_callbacks_cannot_settle_current_operation ... ok
+test agent::process_control::tests::stale_registration_cannot_emit_state_guarded_event ... ok
+test agent::process_control::tests::stale_session_callback_cannot_update_replacement_worker_row ... ok
+test agent::process_control::tests::stale_worker_callbacks_cannot_mutate_replacement_registration ... ok
+test agent::process_control::tests::tool_call_counts_are_registration_fenced_in_snapshots ... ok
+test agent::status::tests::compaction_completion_is_idempotent ... ok
+test agent::status::tests::compaction_lifecycle_tracks_one_active_compaction ... ok
+test agent::status::tests::remove_branch_removes_existing_branch ... ok
+test agent::status::tests::render_full_includes_system_info_and_time ... ok
+test agent::status::tests::render_system_info_collapses_identical_models ... ok
+test agent::status::tests::render_system_info_hides_thinking_when_all_auto ... ok
+test agent::status::tests::render_system_info_no_cron_when_zero ... ok
+test agent::status::tests::render_system_info_shows_all_three_when_all_different ... ok
+test agent::status::tests::render_system_info_shows_thinking_when_not_auto ... ok
+test agent::status::tests::render_system_info_splits_different_models ... ok
+test agent::status::tests::render_with_time_context_renders_current_time_when_empty ... ok
+test agent::status::tests::stale_registration_events_do_not_update_replacement_status ... ok
+test api::agents::tests::test_compute_refresh_age_secs_future_timestamp_clamps_to_zero ... ok
+test api::agents::tests::test_compute_refresh_age_secs_none_stays_none ... ok
+test api::agents::tests::test_compute_refresh_age_secs_rounds_down_to_seconds ... ok
+test api::agents::tests::test_get_warmup_status_single_agent_not_found ... ok
+test api::agents::tests::test_get_warmup_status_sorts_agent_ids_and_hydrates_age ... ok
+test api::agents::tests::test_resolve_warmup_agent_ids_accepts_single_agent_when_deps_present ... ok
+test api::agents::tests::test_trigger_warmup_requires_llm_manager ... ok
+test agent::process_control::tests::session_metadata_waits_for_worker_row_insert ... ok
+test api::channels::tests::archive_update_response_payload_contains_archived_and_is_active ... ok
+test api::channels::tests::live_channel_workers_use_only_the_registered_agent_registry ... ok
+test api::channels::tests::resolve_is_active_filter_allows_explicit_include_inactive ... ok
+test api::channels::tests::resolve_is_active_filter_defaults_to_active_only ... ok
+test api::channels::tests::resolve_is_active_filter_prefers_explicit_state_filter ... ok
+test api::channels::tests::sort_channels_newest_first_by_last_activity_then_created_at ... ok
+test api::config::tests::api_level_changes_keep_the_latest_resume_level ... ok
+test api::config::tests::autonomy_level_update_preserves_other_tuning ... ok
+test api::config::tests::rejected_edit_does_not_run_prewrite_side_effects ... ok
+test api::config::tests::test_update_channel_table_writes_listen_only_mode ... ok
+test api::config::tests::test_update_cortex_table_partial_update_only_sets_requested_keys ... ok
+test api::config::tests::test_update_cortex_table_rejects_invalid_maintenance_values ... ok
+test api::config::tests::test_update_cortex_table_rejects_large_numeric_values ... ok
+test api::config::tests::test_update_cortex_table_writes_values ... ok
+test api::config::tests::test_update_warmup_table_partial_update_only_sets_requested_keys ... ok
+test api::config::tests::test_update_warmup_table_rejects_large_u64_values ... ok
+test api::config::tests::test_update_warmup_table_writes_values ... ok
+test api::config::tests::unchanged_edit_preserves_the_config_file_byte_for_byte ... ok
+test api::cortex::tests::maps_busy_send_error_to_conflict ... ok
+test api::cortex::tests::maps_database_send_error_to_internal_server_error ... ok
+test api::messaging::tests::test_is_valid_e164_invalid_numbers ... ok
+test api::messaging::tests::test_is_valid_e164_valid_numbers ... ok
+test api::providers::tests::build_test_llm_config_registers_ollama_provider_from_base_url ... ok
+test api::providers::tests::resolve_verified_model_does_not_retry_a_requested_default ... ok
+test api::providers::tests::resolve_verified_model_falls_back_when_the_requested_model_is_rejected ... ok
+test api::providers::tests::resolve_verified_model_keeps_the_requested_model_when_it_responds ... ok
+test api::providers::tests::resolve_verified_model_reports_every_failure_when_nothing_responds ... ok
+test api::state::tests::append_live_output_caps_buffer_bytes ... ok
+test api::state::tests::append_live_output_preserves_utf8_boundaries_when_capping ... ok
+test api::state::tests::branch_transcript_accumulates_and_late_output_does_not_recreate_it ... ok
+test api::state::tests::channel_status_unregistration_is_scoped_to_owning_agent ... ok
+test api::state::tests::opencode_session_and_parts_reach_api_state_without_channel_consumer ... ok
+test api::state::tests::sanitize_live_tool_output_line_redacts_detected_leaks ... ok
+test agent::channel_dispatch::tests::cancellation_before_start_gate_never_polls_worker_future ... ok
+test api::state::tests::stale_opencode_part_does_not_mutate_replacement_transcript ... ok
+test api::state::tests::stale_worker_completion_does_not_clear_replacement_transcript ... ok
+test api::state::tests::upsert_pending_tool_output_ignores_finalized_call ... ok
+test api::tasks::tests::an_empty_update_body_defaults_to_a_user_edit_from_the_api ... ok
+test api::tasks::tests::an_unknown_source_is_a_bad_request_not_a_silent_default ... ok
+test api::tasks::tests::create_and_restore_requests_accept_attribution ... ok
+test api::tasks::tests::update_request_carries_attribution_alongside_patch_fields ... ok
+test commands::access::authority_gate_tests::addressed_commands_are_rejected_consistently ... ok
+test commands::access::authority_gate_tests::every_content_type_is_stamped_before_the_router_gives_up ... ok
+test commands::access::authority_gate_tests::stamped_authority_round_trips ... ok
+test commands::access::authority_gate_tests::unstamped_messages_carry_no_authority ... ok
+test commands::access::tests::absent_authority_lists_leave_commands_open ... ok
+test commands::access::tests::adapter_default_applies_when_binding_has_no_list ... ok
+test commands::access::tests::binding_authority_gates_authority_commands_only ... ok
+test commands::access::tests::binding_list_takes_precedence_over_adapter_default ... ok
+test commands::access::tests::denial_names_available_commands ... ok
+test commands::access::tests::empty_adapter_default_is_treated_as_absent ... ok
+test commands::access::tests::explicit_empty_binding_list_opens_scope_despite_restricted_adapter_default ... ok
+test commands::access::tests::omitted_binding_list_defers_to_restricted_adapter_default ... ok
+test commands::access::tests::wildcard_grants_everyone_authority ... ok
+test commands::control::tests::autonomy_enable_restores_the_last_level_or_observe ... ok
+test commands::control::tests::channel_mode_change_handles_empty_string_settings ... ok
+test commands::control::tests::channel_mode_change_preserves_other_settings ... ok
+test commands::control::tests::channel_store_failure_propagates_instead_of_writing_defaults ... ok
+test commands::control::tests::portal_missing_conversation_fails_without_writing ... ok
+test commands::control::tests::portal_mode_change_initializes_null_settings ... ok
+test commands::control::tests::portal_mode_change_preserves_other_settings ... ok
+test commands::control::tests::status_leads_with_a_pause_and_its_reason ... ok
+test commands::control::tests::status_marks_an_adopted_home_as_implicit ... ok
+test commands::control::tests::status_omits_the_pause_line_when_running ... ok
+test commands::control::tests::status_reports_a_reasonless_pause_without_empty_parens ... ok
+test commands::control::tests::status_reports_an_explicit_home_bare ... ok
+test commands::control::tests::status_reports_an_unset_home ... ok
+test commands::control::tests::whoami_distinguishes_authority_from_everyone ... ok
+test commands::native::tests::autonomy_controls_are_exposed_on_native_surfaces ... ok
+test commands::native::tests::control_and_agent_commands_both_appear_in_native_listings ... ok
+test commands::native::tests::discord_specs_cover_every_available_command_within_cap ... ok
+test commands::native::tests::every_command_is_exposed_on_every_available_surface ... ok
+test commands::native::tests::mangled_telegram_names_resolve_to_canonical_defs ... ok
+test commands::native::tests::telegram_menu_covers_every_available_command ... ok
+test commands::native::tests::telegram_menu_entries_satisfy_platform_limits ... ok
+test commands::registry::tests::autonomy_commands_have_separate_read_and_write_authority ... ok
+test commands::registry::tests::choice_args_validate_against_the_set ... ok
+test commands::registry::tests::file_paths_are_not_commands ... ok
+test commands::registry::tests::help_annotates_aliases ... ok
+test commands::registry::tests::help_lists_every_command_exactly_once ... ok
+test commands::registry::tests::lookup_is_case_insensitive ... ok
+test commands::registry::tests::names_and_aliases_are_globally_unique ... ok
+test commands::registry::tests::optional_args_pass_through ... ok
+test commands::registry::tests::parses_basic_command ... ok
+test commands::registry::tests::parses_with_surrounding_whitespace ... ok
+test commands::registry::tests::prompt_template_keys_are_registered ... ok
+test commands::registry::tests::required_args_produce_usage_when_missing ... ok
+test commands::registry::tests::resolves_aliases_to_canonical_def ... ok
+test commands::registry::tests::smart_dashes_are_normalized_in_args ... ok
+test commands::registry::tests::strips_telegram_botname_suffix ... ok
+test commands::registry::tests::trailing_text_on_no_arg_command_is_conversation ... ok
+test commands::registry::tests::unknown_slash_words_are_not_commands ... ok
+test config::load::autonomy_config_tests::resolve_merges_partial_toml_over_defaults ... ok
+test config::load::autonomy_config_tests::resolve_rejects_invalid_overrides_with_scoped_error ... ok
+test config::load::autonomy_config_tests::resolve_rejects_unknown_level ... ok
+test config::load::skills_config_tests::compaction_config_reads_chronicle_mode_and_overrides ... ok
+test config::load::skills_config_tests::compaction_config_rejects_an_unknown_mode ... ok
+test config::load::skills_config_tests::compaction_config_without_mode_stays_rolling ... ok
+test config::load::skills_config_tests::resolve_skills_config_merges_partial_toml_over_base ... ok
+test config::load::wake_config_tests::agent_wakes_parse_with_defaults ... ok
+test config::load::wake_config_tests::agent_wakes_reject_unknown_min_level ... ok
+test config::permissions::base64_tests::test_invalid_base64 ... ok
+test config::permissions::base64_tests::test_valid_standard_base64 ... ok
+test config::permissions::base64_tests::test_valid_url_safe_base64 ... ok
+test config::permissions::dm_wildcard_tests::mattermost_empty_blocks_all ... ok
+test config::permissions::dm_wildcard_tests::mattermost_specific_is_exact_match ... ok
+test config::permissions::dm_wildcard_tests::mattermost_wildcard_allows_any_user ... ok
+test config::permissions::dm_wildcard_tests::slack_empty_blocks_all ... ok
+test config::permissions::dm_wildcard_tests::slack_specific_is_exact_match ... ok
+test config::permissions::dm_wildcard_tests::slack_wildcard_allows_any_user ... ok
+test config::tests::adapter_matches_default_binding_default_message ... ok
+test config::tests::adapter_matches_named_binding_named_message ... ok
+test config::tests::adapter_mismatch_default_vs_named ... ok
+test config::tests::adapter_mismatch_different_names ... ok
+test config::tests::adapter_mismatch_named_vs_default ... ok
+test config::tests::all_shorthand_keys_register_providers_via_env ... ok
+test config::tests::all_shorthand_keys_register_providers_via_toml ... ok
+test config::tests::binding_runtime_adapter_key_method ... ok
+test config::tests::binding_uses_default_adapter ... ok
+test config::tests::default_provider_config_ollama_uses_base_url_and_empty_api_key ... ok
+test config::tests::inbound_message_adapter_key_default ... ok
+test config::tests::inbound_message_adapter_key_named ... ok
+test config::tests::inbound_message_adapter_selector_default ... ok
+test config::tests::inbound_message_adapter_selector_named ... ok
+test config::tests::matched_binding_resolves_preassigned_portal_messages ... ok
+test config::tests::normalize_adapter_trims_and_clears_empty ... ok
+test config::tests::ollama_base_url_registers_provider ... ok
+test config::tests::ollama_custom_provider_takes_precedence_over_shorthand ... ok
+test config::tests::ollama_key_alone_registers_provider_with_default_url ... ok
+test config::tests::runtime_adapter_key_default ... ok
+test config::tests::runtime_adapter_key_empty_name_is_default ... ok
+test config::tests::runtime_adapter_key_named ... ok
+test config::tests::slack_permissions_deduplicates_dm_users ... ok
+test config::tests::slack_permissions_empty_dm_users_stays_empty ... ok
+test config::tests::slack_permissions_ignores_non_slack_bindings ... ok
+test config::tests::slack_permissions_merges_dm_users_from_config_and_bindings ... ok
+test config::tests::slack_permissions_merges_dm_users_from_multiple_bindings ... ok
+test config::tests::slack_permissions_no_workspace_filter_when_none_specified ... ok
+test config::tests::slack_permissions_workspace_filter_from_bindings ... ok
+test config::tests::test_api_type_deserialization ... ok
+test config::tests::test_api_type_deserialization_invalid ... ok
+test config::tests::test_cortex_default_and_agent_override_resolution ... ok
+test config::tests::test_cortex_maintenance_config_rejects_invalid_ranges ... ok
+test api::state::tests::tool_output_before_worker_started_is_cached_and_stale_output_ignored_after_complete ... ok
+test config::tests::test_cron_timezone_invalid_default_uses_env_fallback ... ok
+test config::tests::test_cron_timezone_invalid_falls_back_to_system ... ok
+test config::tests::test_cron_timezone_resolution_precedence ... ok
+test config::tests::test_docker_deployment_forces_api_bind_from_env_defaults ... ok
+test config::tests::test_docker_deployment_forces_api_bind_from_toml ... ok
+test config::tests::test_explicit_openrouter_provider_toml_injects_extra_headers ... ok
+test config::tests::test_explicit_provider_config_takes_priority_over_legacy_key_migration ... ok
+test config::tests::test_hosted_deployment_forces_api_bind_from_env_defaults ... ok
+test config::tests::test_hosted_deployment_forces_api_bind_from_toml ... ok
+test config::tests::test_legacy_llm_keys_auto_migrate_to_providers ... ok
+test config::tests::test_llm_provider_tables_parse_with_env_and_lowercase_keys ... ok
+test config::tests::test_load_from_env_populates_legacy_key_and_provider ... ok
+test config::tests::test_needs_onboarding_false_with_oauth_credentials ... ok
+test config::tests::test_needs_onboarding_false_with_openai_oauth_credentials ... ok
+test config::tests::test_needs_onboarding_with_anthropic_env_key ... ok
+test config::tests::test_needs_onboarding_without_config_or_env ... ok
+test config::tests::test_participant_context_rejects_impossible_bounds ... ok
+test config::tests::test_participant_context_defaults_and_overrides_resolution ... ok
+test config::tests::test_provider_config_deserialization_no_name ... ok
+test config::tests::test_provider_config_deserialization ... ok
+test config::tests::test_user_timezone_falls_back_to_cron_timezone ... ok
+test config::tests::test_user_timezone_invalid_config_uses_env_fallback ... ok
+test config::tests::test_user_timezone_invalid_falls_back_to_cron_timezone ... ok
+test config::tests::test_warmup_default_and_agent_override_resolution ... ok
+test config::tests::test_user_timezone_resolution_precedence ... ok
+test config::tests::test_work_readiness_allows_old_synthesis ... ok
+test config::tests::test_warmup_defaults_applied_when_not_configured ... ok
+test config::tests::test_work_readiness_does_not_require_embedding_when_eager_load_disabled ... ok
+test config::tests::test_work_readiness_ready_when_all_constraints_hold ... ok
+test config::tests::test_work_readiness_requires_completed_warmup ... ok
+test config::tests::test_work_readiness_requires_embedding_ready ... ok
+test config::tests::test_work_readiness_requires_warm_state ... ok
+test config::tests::toml_backward_compat_no_adapter_field ... ok
+test config::tests::tool_use_enforcement_parses_and_resolves ... ok
+test config::tests::top_level_mcp_servers_silently_ignored_by_serde ... ok
+test config::tests::toml_round_trip_with_named_instances ... ok
+test config::tests::validate_adapter_on_unsupported_platform_rejected ... ok
+test config::tests::validate_disabled_instance_is_filtered_out ... ok
+test config::tests::validate_binding_without_default_adapter_skipped ... ok
+test config::tests::validate_disabled_platform_default_is_filtered_out ... ok
+test config::tests::validate_missing_messaging_config_skipped ... ok
+test config::tests::validate_named_adapters_default_name_rejected ... ok
+test config::tests::validate_mixed_valid_and_invalid_bindings_filters_correctly ... ok
+test config::tests::validate_named_adapters_empty_name_rejected ... ok
+test config::tests::validate_named_adapters_duplicate_names_rejected ... ok
+test config::tests::validate_named_adapters_missing_instance_skipped ... ok
+test config::tests::validate_named_adapters_valid_config ... ok
+test config::tests::validate_strict_mode_rejects_missing_messaging_config ... ok
+test config::types::autonomy_config_validation_tests::autonomy_defaults_pass_validation ... ok
+test config::types::autonomy_config_validation_tests::autonomy_level_round_trips ... ok
+test config::types::autonomy_config_validation_tests::autonomy_levels_order_by_capability ... ok
+test config::types::autonomy_config_validation_tests::autonomy_rejects_out_of_range_active_hours ... ok
+test config::types::autonomy_config_validation_tests::autonomy_rejects_short_interval ... ok
+test config::types::autonomy_config_validation_tests::autonomy_rejects_zero_max_tasks ... ok
+test config::tests::warn_unknown_config_keys_no_panic ... ok
+test config::types::mattermost_url_tests::accepts_http_localhost_with_warning ... ok
+test config::types::mattermost_url_tests::accepts_https_url ... ok
+test config::types::mattermost_url_tests::accepts_root_path ... ok
+test config::types::mattermost_url_tests::rejects_credentials_in_url ... ok
+test config::types::mattermost_url_tests::rejects_fragment ... ok
+test config::types::mattermost_url_tests::rejects_http_non_localhost ... ok
+test config::types::mattermost_url_tests::rejects_invalid_scheme ... ok
+test config::types::mattermost_url_tests::rejects_non_root_path ... ok
+test config::types::mattermost_url_tests::rejects_query_string ... ok
+test config::types::mattermost_url_tests::rejects_unparseable_url ... ok
+test conversation::channels::tests::extract_platform_meta_omits_thread_id_when_absent ... ok
+test conversation::channels::tests::extract_platform_meta_persists_telegram_thread_id ... ok
+test conversation::channels::tests::delete_rejects_channel_referenced_by_nonterminal_worker ... ok
+test conversation::channels::tests::list_is_active_filter_controls_visibility ... ok
+test conversation::channels::tests::set_active_toggles_channel_state_without_deleting ... ok
+test conversation::chronicle::tests::checkpoint_by_id_resolves_without_a_channel ... FAILED
+test conversation::chronicle::tests::commits_allocate_sequential_boundaries_with_no_gap ... FAILED
+test conversation::chronicle::tests::covering_checkpoint_includes_both_boundaries ... FAILED
+test conversation::chronicle::tests::covering_checkpoint_matches_inside_a_same_day_window ... FAILED
+test conversation::chronicle::tests::covering_checkpoint_prefers_the_newest_on_a_shared_boundary ... FAILED
+test conversation::chronicle::tests::duplicate_commit_yields_one_row ... FAILED
+test conversation::chronicle::tests::empty_span_is_refused ... ok
+test conversation::chronicle::tests::late_same_second_insert_stays_after_a_committed_boundary ... FAILED
+test conversation::chronicle::tests::newest_tail_keeps_the_end_of_the_span_in_chronological_order ... ok
+test conversation::chronicle::tests::logger_writes_after_a_boundary_are_never_stranded ... FAILED
+test conversation::chronicle::tests::range_pagination_reaches_the_end_of_a_large_span ... ok
+test conversation::chronicle::tests::rollup_commits_and_links_exact_source_checkpoints ... FAILED
+test conversation::chronicle::tests::range_selection_is_half_open_and_contiguous ... ok
+test conversation::chronicle::tests::rollup_rejects_stale_source_selection ... FAILED
+test conversation::chronicle::tests::stale_cut_is_superseded_and_writes_nothing ... FAILED
+test conversation::chronicle::tests::stats_report_unsummarized_tail ... FAILED
+test conversation::history::tests::branch_detail_round_trip_includes_transcript_and_metadata ... ok
+test conversation::history::tests::cancel_running_detached_worker_does_not_touch_channel_bound_rows ... ok
+test agent::cortex::tests::run_cortex_loop_tick_not_starved_by_events ... ok
+test conversation::history::tests::cancel_running_detached_worker_updates_null_channel_rows ... ok
+test conversation::history::tests::cancel_running_worker_sets_cancelled_status ... ok
+test conversation::history::tests::duplicate_branch_terminal_write_preserves_first_outcome ... ok
+test conversation::history::tests::duplicate_terminal_commit_preserves_first_outcome_and_version ... ok
+test conversation::history::tests::delayed_idle_and_resume_cannot_overwrite_terminal_outcomes ... ok
+test conversation::history::tests::illegal_transition_returns_conflict ... ok
+test conversation::history::tests::log_worker_cancelled_sets_cancelled_status ... ok
+test conversation::history::tests::log_worker_completed_failure_sets_failed_status ... ok
+test conversation::history::tests::log_worker_completed_success_sets_done_status ... ok
+test conversation::history::tests::page_truncation_never_orphans_tool_calls ... ok
+test conversation::history::tests::missing_worker_results_are_explicit ... ok
+test conversation::history::tests::opencode_session_metadata_is_persisted_by_worker_id ... ok
+test conversation::history::tests::timeline_pagination_does_not_skip_same_second_peers ... ok
+test conversation::history::tests::running_cancelling_cancelled_commits_terminal_payload ... ok
+test conversation::history::tests::timeline_places_checkpoints_between_the_messages_they_follow ... FAILED
+test conversation::history::tests::running_completing_succeeded_commits_terminal_payload ... ok
+test conversation::history::tests::worker_start_ownership_round_trip ... ok
+test conversation::participants::tests::falls_back_to_platform_scoped_key_for_unknown_sender ... ok
+test conversation::participants::tests::participant_display_name_prefers_formatted_author ... ok
+test conversation::participants::tests::participant_display_name_sanitizes_user_input ... ok
+test conversation::participants::tests::participant_memory_key_uses_adapter_scope_for_unknown_sender ... ok
+test conversation::participants::tests::participant_memory_key_uses_platform_scope_for_unknown_sender ... ok
+test conversation::participants::tests::renderable_participants_respects_minimum_and_ordering ... ok
+test conversation::participants::tests::track_active_participant_uses_adapter_scope_for_fallback_key ... ok
+test conversation::participants::tests::tracks_known_human_with_canonical_id ... ok
+test conversation::participants::tests::upgrades_fallback_participant_entry_without_duplicates ... ok
+test conversation::settings::tests::test_memory_mode_persistence ... ok
+test conversation::settings::tests::test_settings_resolution_defaults ... ok
+test conversation::settings::tests::test_settings_resolution_order ... ok
+test conversation::settings::tests::test_worker_memory_modes ... ok
+test cron::scheduler::tests::cron_normalizes_thread_replies_to_text ... ok
+test cron::scheduler::tests::cron_preserves_file_responses_for_delivery ... ok
+test cron::scheduler::tests::cron_run_error_distinguishes_delivery_failures ... ok
+test cron::scheduler::tests::cron_summary_uses_card_fallback_when_rich_text_is_empty ... ok
+test cron::scheduler::tests::cron_summary_uses_file_caption_or_filename ... ok
+test conversation::history::tests::timeout_and_completion_competing_commits_choose_one_terminal_outcome ... ok
+test cron::scheduler::tests::cron_wait_returns_first_delivery_response_without_waiting_for_channel_close ... ok
+test cron::scheduler::tests::set_job_enabled_state_updates_in_memory_flag ... ok
+test cron::scheduler::tests::test_hour_in_active_window_equal_start_end_is_always_active ... ok
+test cron::scheduler::tests::test_hour_in_active_window_midnight_wrapping ... ok
+test cron::scheduler::tests::test_hour_in_active_window_non_wrapping ... ok
+test conversation::history::tests::waiting_for_input_resumes_running ... ok
+test cron::scheduler::tests::test_normalize_active_hours ... ok
+test api::agents::tests::test_trigger_warmup_single_agent_not_found_when_llm_manager_is_ready ... ok
+test cron::scheduler::tests::cron_sync_job_from_store_refreshes_stale_cursor_after_lost_claim ... ok
+test cron::store::tests::load_all_executions_includes_cron_id ... ok
+test cron::store::tests::legacy_execution_rows_fall_back_to_old_success_shape ... ok
+test daemon::tests::ipc_duplicate_shutdown_is_rejected ... ok
+test daemon::tests::ipc_rejected_restart_is_reported_to_client ... ok
+test daemon::tests::ipc_shutdown_acknowledges_and_fires_lifecycle ... ok
+test daemon::tests::restart_command_roundtrips ... ok
+test daemon::tests::status_response_carries_run_id ... ok
+test daemon::tests::status_response_tolerates_missing_run_id ... ok
+test daemon::tests::truncate_for_log_handles_multibyte_characters ... ok
+test daemon::tests::truncate_for_log_returns_original_when_within_limit ... ok
+test factory::presets::tests::all_presets_load_successfully ... ok
+test factory::presets::tests::list_returns_all_presets ... ok
+test factory::presets::tests::load_nonexistent_returns_none ... ok
+test factory::presets::tests::load_returns_full_preset ... ok
+test factory::presets::tests::meta_has_required_fields ... ok
+test github_copilot_auth::tests::derive_base_url_empty_token ... ok
+test github_copilot_auth::tests::derive_base_url_from_proxy_ep ... ok
+test github_copilot_auth::tests::derive_base_url_no_proxy_ep ... ok
+test github_copilot_auth::tests::derive_base_url_rejects_invalid_suffix ... ok
+test github_copilot_auth::tests::hash_pat_deterministic ... ok
+test github_copilot_auth::tests::parse_expires_at_milliseconds ... ok
+test github_copilot_auth::tests::parse_expires_at_seconds ... ok
+test github_copilot_auth::tests::parse_expires_at_string ... ok
+test github_copilot_auth::tests::token_expired_check ... ok
+test cron::store::tests::log_execution_preserves_separate_delivery_failure_state ... ok
+test goals::store::tests::completion_sets_completed_at ... ok
+test goals::store::tests::create_defaults_to_active ... ok
+test goals::store::tests::create_rejects_invalid_due_date ... ok
+test cron::store::tests::save_normalizes_next_run_at_to_canonical_rfc3339 ... ok
+test goals::store::tests::linked_task_counts_cover_all_statuses ... ok
+test goals::store::tests::list_filters_by_status_and_orders_by_priority ... ok
+test cron::store::tests::save_rejects_invalid_next_run_at ... ok
+test goals::store::tests::metadata_updates_deep_merge ... ok
+test goals::store::tests::transition_matrix_matches_lifecycle ... ok
+test goals::store::tests::rejects_invalid_status_transitions ... ok
+test hooks::loop_guard::tests::allow_below_threshold ... ok
+test hooks::loop_guard::tests::block_at_block_threshold ... ok
+test hooks::loop_guard::tests::block_at_warn_threshold ... ok
+test hooks::loop_guard::tests::channel_has_stricter_thresholds_than_worker ... ok
+test hooks::loop_guard::tests::consecutive_identical_calls_still_blocked ... ok
+test hooks::loop_guard::tests::different_params_no_collision ... ok
+test hooks::loop_guard::tests::different_results_do_not_poison ... ok
+test hooks::loop_guard::tests::no_false_ping_pong ... ok
+test goals::store::tests::render_active_goals_is_empty_without_active_goals ... ok
+test hooks::loop_guard::tests::non_poll_shell_not_relaxed ... ok
+test hooks::loop_guard::tests::non_consecutive_identical_calls_allowed ... ok
+test hooks::loop_guard::tests::outcome_repetition_poisons_call_hash ... ok
+test hooks::loop_guard::tests::observation_tool_consecutive_gets_relaxed_threshold ... ok
+test hooks::loop_guard::tests::ping_pong_ab_detection ... ok
+test hooks::loop_guard::tests::ping_pong_abc_detection ... ok
+test hooks::loop_guard::tests::poll_tool_relaxed_thresholds ... ok
+test hooks::loop_guard::tests::reset_clears_all_state ... ok
+test hooks::loop_guard::tests::warning_bucket_escalates_to_block ... ok
+test hooks::spacebot::tests::channel_text_delta_emits_process_event ... ok
+test hooks::spacebot::tests::default_status_kind_does_not_signal_outcome ... ok
+test hooks::spacebot::tests::does_not_nudge_when_completion_contains_tool_call ... ok
+test hooks::spacebot::tests::explicit_policy_override_disables_nudge ... ok
+test hooks::spacebot::tests::failed_set_status_does_not_signal_outcome ... ok
+test hooks::spacebot::tests::first_nudge_retry_prunes_failed_assistant_turn_but_keeps_task_prompt ... ok
+test hooks::spacebot::tests::injection_continues_when_no_pending_messages ... ok
+test hooks::spacebot::tests::injection_does_not_interfere_with_nudge ... ok
+test hooks::spacebot::tests::injection_drains_multiple_messages ... ok
+test hooks::spacebot::tests::injection_take_clears_buffer ... ok
+test hooks::spacebot::tests::injection_reason_detection ... ok
+test hooks::spacebot::tests::injection_terminates_on_pending_messages ... ok
+test hooks::spacebot::tests::memory_persistence_fabricated_saved_ids_are_rejected ... ok
+test hooks::spacebot::tests::memory_persistence_plain_text_completion_is_rejected_without_terminal_tool ... ok
+test hooks::spacebot::tests::memory_persistence_no_memories_outcome_is_accepted_without_saves ... ok
+test hooks::spacebot::tests::memory_persistence_saved_outcome_accepts_real_memory_save_ids ... ok
+test hooks::spacebot::tests::memory_persistence_tool_error_does_not_stop_the_loop ... ok
+test hooks::spacebot::tests::memory_persistence_terminal_outcome_stops_the_loop ... ok
+test hooks::spacebot::tests::nudges_after_tool_calls_without_outcome ... ok
+test hooks::spacebot::tests::nudge_counter_not_reset_when_policy_disabled ... ok
+test hooks::spacebot::tests::nudges_on_every_text_only_response_without_outcome ... ok
+test hooks::spacebot::tests::nudges_on_reasoning_only_response_without_outcome ... ok
+test goals::store::tests::render_active_goals_uses_notes_then_task_summary ... ok
+test hooks::spacebot::tests::outcome_signal_allows_text_only_completion_when_not_terminal ... ok
+test hooks::spacebot::tests::outcome_signal_lets_the_worker_write_its_final_text ... ok
+test hooks::spacebot::tests::outcome_signal_retains_full_outcome_text ... ok
+test hooks::spacebot::tests::process_scoped_policy_disables_nudge_for_branch ... ok
+test hooks::spacebot::tests::process_scoped_policy_enables_nudge_for_worker_by_default ... ok
+test hooks::spacebot::tests::process_scoped_policy_disables_nudge_for_channel ... ok
+test hooks::spacebot::tests::prompt_with_tool_nudge_retry_prunes_nudge_prompt_on_success ... ok
+test hooks::spacebot::tests::reply_tool_call_delta_emits_process_event ... ok
+test hooks::spacebot::tests::progress_status_does_not_signal_outcome ... ok
+test hooks::spacebot::tests::reset_clears_retained_outcome_text ... ok
+test hooks::spacebot::tests::successful_send_file_terminates_channel_turn ... ok
+test hooks::spacebot::tests::shell_tool_result_clears_registry_entry_after_error ... ok
+test hooks::spacebot::tests::tool_result_resets_consecutive_nudge_counter ... ok
+test hooks::spacebot::tests::tool_nudge_retry_history_hygiene_prevents_stacked_retry_turns ... ok
+test hooks::spacebot::tests::stale_worker_hook_does_not_count_against_a_replacement ... ok
+test hooks::spacebot::tests::worker_tool_results_count_against_the_registry_entry ... ok
+test lifecycle::tests::discard_removes_marker_and_tolerates_absence ... ok
+test lifecycle::tests::restart_after_shutdown_is_rejected ... ok
+test lifecycle::tests::pending_restart_roundtrip ... ok
+test lifecycle::tests::restart_fires_after_grace_delay ... ok
+test lifecycle::tests::restart_spec_args_full_flags ... ok
+test lifecycle::tests::restart_spec_args_minimal ... ok
+test lifecycle::tests::restart_spec_canonicalizes_config_path ... ok
+test lifecycle::tests::second_restart_request_is_rejected ... ok
+test lifecycle::tests::shutdown_supersedes_pending_restart ... ok
+test lifecycle::tests::unparseable_marker_is_discarded ... ok
+test llm::anthropic::auth::tests::api_key_detected_correctly ... ok
+test llm::anthropic::auth::tests::force_bearer_overrides_prefix ... ok
+test goals::store::tests::update_replaces_notes_instead_of_appending ... ok
+test llm::anthropic::auth::tests::api_key_has_no_identity_headers ... ok
+test llm::anthropic::auth::tests::oauth_token_detected_correctly ... ok
+test llm::anthropic::auth::tests::api_key_uses_x_api_key_header ... ok
+test llm::anthropic::auth::tests::interleaved_thinking_appended_to_beta ... ok
+test llm::anthropic::auth::tests::no_interleaved_thinking_when_disabled ... ok
+test llm::anthropic::auth::tests::oauth_token_includes_claude_code_beta ... ok
+test llm::anthropic::auth::tests::oauth_token_includes_identity_headers ... ok
+test llm::anthropic::auth::tests::oauth_token_uses_bearer_header ... ok
+test llm::anthropic::auth::tests::unknown_prefix_defaults_to_api_key ... ok
+test llm::anthropic::cache::tests::default_is_short ... ok
+test llm::anthropic::cache::tests::explicit_override_wins ... ok
+test llm::anthropic::cache::tests::long_returns_ephemeral_for_other_hosts ... ok
+test llm::anthropic::cache::tests::long_returns_ttl_for_anthropic ... ok
+test llm::anthropic::cache::tests::none_returns_no_cache_control ... ok
+test llm::anthropic::cache::tests::short_returns_ephemeral ... ok
+test llm::anthropic::params::tests::adaptive_thinking_detected_for_4_6_models ... ok
+test llm::anthropic::params::tests::adaptive_thinking_not_detected_for_older_models ... ok
+test llm::anthropic::tools::tests::all_canonical_names_normalize ... ok
+test llm::anthropic::tools::tests::lowercase_normalizes_to_canonical ... ok
+test llm::anthropic::tools::tests::mixed_case_normalizes ... ok
+test llm::anthropic::tools::tests::reverse_mapping_case_insensitive ... ok
+test llm::anthropic::tools::tests::reverse_mapping_falls_back_to_input ... ok
+test llm::anthropic::tools::tests::reverse_mapping_finds_original ... ok
+test llm::anthropic::tools::tests::unknown_names_pass_through ... ok
+test llm::context_window::tests::context_window_ignores_implausible_values ... ok
+test llm::context_window::tests::context_window_reads_a_nested_limit_object ... ok
+test llm::context_window::tests::context_window_reads_every_candidate_key ... ok
+test llm::context_window::tests::endpoint_models_response_is_parsed_in_both_shapes ... ok
+test llm::context_window::tests::flat_models_json_entries_are_collected ... ok
+test llm::context_window::tests::id_mapping_exact_match ... ok
+test llm::context_window::tests::id_mapping_ignores_a_vendor_prefix ... ok
+test llm::context_window::tests::id_mapping_matches_the_model_segment_of_a_namespaced_catalogue_key ... ok
+test llm::context_window::tests::id_mapping_never_matches_a_variant_of_the_same_family ... ok
+test llm::context_window::tests::id_mapping_prefers_the_exact_name_over_a_longer_neighbour ... ok
+test llm::context_window::tests::id_mapping_reports_no_match_for_an_unrelated_id ... ok
+test llm::context_window::tests::id_mapping_strips_a_colon_suffix ... ok
+test llm::context_window::tests::id_mapping_swaps_dash_and_dot_in_both_directions ... ok
+test llm::context_window::tests::models_dev_entries_are_collected_across_providers ... ok
+test llm::anthropic::auth::tests::proxy_bearer_has_no_identity_headers ... ok
+test llm::context_window::tests::real_catalogue_ids_resolve_against_the_flat_namespaced_listing ... ok
+test llm::context_window::tests::separator_variants_are_bidirectional_and_deduplicated ... ok
+test llm::context_window::tests::version_segment_swap_flips_only_the_separator_between_digits ... ok
+test llm::history_repair::tests::a_duplicate_result_is_rewritten ... ok
+test llm::history_repair::tests::a_forked_worker_history_cut_mid_turn_is_repaired ... ok
+test llm::history_repair::tests::a_long_result_is_truncated_in_the_note ... ok
+test llm::history_repair::tests::a_stale_result_is_rewritten ... ok
+test llm::history_repair::tests::an_orphan_only_history_still_produces_messages ... ok
+test llm::history_repair::tests::answered_calls_are_never_dropped ... ok
+test llm::history_repair::tests::only_a_non_trailing_unanswered_call_is_dropped ... ok
+test llm::history_repair::tests::only_the_unclaimed_result_of_a_batch_is_rewritten ... ok
+test llm::history_repair::tests::paired_history_is_left_alone ... ok
+test llm::history_repair::tests::result_carrying_the_call_id_field_survives ... ok
+test llm::history_repair::tests::result_matching_only_the_call_id_survives ... ok
+test llm::history_repair::tests::stranded_result_becomes_untrusted_text ... ok
+test llm::context_window::tests::models_dev_resolution_uses_the_mapping_ladder ... ok
+test llm::history_repair::tests::text_in_a_repaired_message_survives ... ok
+test llm::manager::context_ceiling_tests::a_nonsense_refusal_is_ignored ... ok
+test llm::manager::context_ceiling_tests::a_refusal_cannot_raise_the_configured_ceiling ... ok
+test llm::manager::context_ceiling_tests::a_refusal_teaches_the_ceiling_for_that_model_alone ... ok
+test llm::manager::context_ceiling_tests::nothing_is_enforced_until_a_ceiling_is_known ... ok
+test llm::manager::context_ceiling_tests::the_ceiling_only_ever_moves_down ... ok
+test llm::manager::context_ceiling_tests::the_configured_default_applies_to_every_model ... ok
+test llm::model::context_trim_tests::a_budget_cannot_go_below_zero ... ok
+test llm::model::context_trim_tests::a_history_already_under_budget_is_left_alone ... ok
+test llm::model::context_trim_tests::a_small_budget_still_produces_a_sendable_history ... ok
+test llm::model::context_trim_tests::an_overflowing_history_is_brought_under_budget ... ok
+test llm::model::context_trim_tests::the_learned_ceiling_and_the_budget_charge_overhead_once ... ok
+test llm::model::tests::block_map_fits_requires_the_blocks_to_tile_the_prompt ... ok
+test llm::model::tests::coding_plan_model_name_uses_plain_glm_id ... ok
+test llm::model::context_trim_tests::the_retained_head_is_never_a_stranded_result ... ok
+test llm::model::tests::convert_messages_to_anthropic_maps_system_to_user_role ... ok
+test llm::model::tests::convert_messages_to_openai_maps_system_to_user_role ... ok
+test llm::model::tests::convert_messages_to_openai_preserves_empty_reasoning_content_for_redacted_reasoning ... ok
+test llm::model::tests::convert_messages_to_openai_preserves_reasoning_for_tool_calls ... ok
+test llm::model::tests::convert_messages_to_openai_responses_function_call_output_prefers_call_id_over_id ... ok
+test llm::model::tests::convert_messages_to_openai_responses_function_call_prefers_call_id_over_id ... ok
+test llm::model::tests::convert_messages_to_openai_responses_maps_system_to_user_role ... ok
+test llm::model::tests::convert_messages_to_anthropic_omits_empty_text_messages ... ok
+test llm::model::tests::convert_messages_to_openai_responses_preserves_empty_reasoning_content_for_redacted_reasoning ... ok
+test llm::model::tests::convert_messages_to_openai_responses_preserves_reasoning_for_tool_calls ... ok
+test llm::model::tests::convert_messages_to_openai_tool_result_prefers_call_id_over_id ... ok
+test llm::model::tests::empty_non_end_turn_response_returns_error ... ok
+test llm::model::tests::end_turn_placeholder_is_not_forwarded_back_to_anthropic ... ok
+test llm::model::tests::extract_sse_data_payload_merges_data_lines ... ok
+test llm::model::tests::flush_openai_streaming_tool_calls_errors_on_invalid_arguments ... ok
+test llm::model::tests::flush_openai_streaming_tool_calls_sanitizes_control_chars_in_string_arguments ... ok
+test llm::model::tests::parse_anthropic_response_drops_empty_text_blocks ... ok
+test llm::model::tests::parse_openai_chat_sse_response_merges_multiline_data_blocks ... ok
+test llm::model::tests::format_api_error_includes_openrouter_metadata ... ok
+test llm::model::tests::parse_openai_chat_sse_response_reconstructs_tool_calls ... ok
+test llm::model::tests::parse_openai_chat_sse_response_requires_data_lines ... ok
+test llm::model::tests::parse_openai_response_empty_error_includes_provider_and_finish_reason ... ok
+test llm::model::tests::parse_openai_response_handles_legacy_function_call ... ok
+test llm::model::tests::parse_openai_response_handles_content_array_parts ... ok
+test llm::model::tests::parse_openai_response_uses_reasoning_when_content_is_empty ... ok
+test llm::model::tests::parse_openai_responses_response_parses_fallback_text_without_output_text ... ok
+test llm::model::tests::parse_openai_responses_response_preserves_function_call_call_id_from_completed_response ... ok
+test llm::model::tests::post_history_note_appends_after_prior_turns ... ok
+test llm::model::tests::process_openai_chat_stream_event_does_not_duplicate_message_tool_calls ... ok
+test llm::model::tests::process_openai_chat_stream_event_flushes_tool_calls ... ok
+test llm::model::tests::process_openai_responses_stream_event_emits_text_and_tool_call_deltas ... ok
+test llm::model::tests::raw_streaming_response_reports_usage ... ok
+test llm::model::tests::responses_sse_failure_event_surfaces_provider_message ... ok
+test llm::model::tests::parse_openai_responses_response_unsupported_empty_error_is_actionable_and_provider_specific ... ok
+test llm::model::tests::responses_sse_incomplete_event_yields_partial_output ... ok
+test llm::model::tests::responses_sse_truncated_stream_is_retriable ... ok
+test llm::model::tests::reverse_map_restores_original_tool_names ... ok
+test llm::model::tests::split_system_prompt_falls_back_to_the_preamble_field ... ok
+test llm::model::tests::split_system_prompt_ignores_a_later_system_message ... ok
+test llm::model::tests::split_system_prompt_reads_the_leading_system_message ... ok
+test llm::model::tests::split_system_prompt_tolerates_a_request_with_neither ... ok
+test llm::model::tests::tool_definitions_are_sorted_by_name_for_stable_serialization ... ok
+test llm::pricing::tests::test_cached_tokens_reduce_cost ... ok
+test llm::pricing::tests::test_claude_sonnet_pricing ... ok
+test llm::pricing::tests::test_unknown_model_uses_fallback ... ok
+test llm::record::tests::missing_record_is_a_miss_not_an_error ... ok
+test llm::record::tests::lists_every_request_for_a_message ... ok
+test llm::record::tests::resolves_a_unique_id_prefix_and_rejects_an_ambiguous_one ... ok
+test llm::record::tests::round_trips_a_record_through_disk_and_index ... ok
+test llm::routing::tests::endpoint_does_not_duplicate_a_resource_path_already_present ... ok
+test llm::routing::tests::endpoint_keeps_a_base_url_that_already_carries_v1 ... ok
+test llm::routing::tests::endpoint_never_emits_an_empty_segment ... ok
+test llm::routing::tests::endpoint_never_inserts_v1_of_its_own ... ok
+test llm::routing::tests::default_model_candidates_are_provider_prefixed_and_unique ... ok
+test llm::routing::tests::endpoint_trims_trailing_slashes_without_doubling ... ok
+test llm::routing::tests::is_rate_limit_error_detection ... ok
+test llm::routing::tests::is_model_not_found_error_detection ... ok
+test llm::routing::tests::is_retriable_error_catches_http_errors ... ok
+test llm::routing::tests::is_retriable_error_catches_malformed_responses ... ok
+test llm::routing::tests::is_retriable_error_catches_server_error_phrases ... ok
+test llm::routing::tests::is_retriable_error_catches_timeout_and_connection_errors ... ok
+test llm::routing::tests::is_retriable_error_catches_network_failures ... ok
+test llm::routing::tests::is_retriable_error_rejects_non_retriable_errors ... ok
+test llm::routing::tests::provider_retry_covers_the_transient_status_classes ... ok
+test llm::routing::tests::is_tool_history_mismatch_error_detects_provider_400s ... ok
+test llm::routing::tests::provider_retry_delays_back_off_and_keep_up_with_the_attempt_budget ... ok
+test llm::routing::tests::provider_retry_fails_fast_on_rate_limits_and_permanent_errors ... ok
+test llm::usage::tests::test_accumulator_no_usage_skips_flush ... ok
+test llm::usage::tests::test_accumulator_add ... ok
+test llm::usage::tests::test_anthropic_body_extraction ... ok
+test llm::usage::tests::test_cost_status_conservatism ... ok
+test llm::usage::tests::test_openai_body_extraction ... ok
+test llm::usage::tests::test_primary_model ... ok
+test mcp::tests::interpolate_env_placeholders_literal_passthrough ... ok
+test mcp::tests::interpolate_env_placeholders_no_placeholders ... ok
+test mcp::tests::parse_bearer_token_case_insensitive ... ok
+test mcp::tests::parse_bearer_token_raw_token_passthrough ... ok
+test mcp::tests::parse_bearer_token_rejects_empty_bearer_value ... ok
+test mcp::tests::parse_bearer_token_rejects_empty_value ... ok
+test mcp::tests::parse_bearer_token_rejects_non_bearer_scheme ... ok
+test mcp::tests::parse_bearer_token_strips_bearer_prefix ... ok
+test mcp::tests::parse_bearer_token_trims_whitespace ... ok
+test memory::analyzer::tests::analyze_tokens_drops_english_stop_words ... ok
+test memory::analyzer::tests::analyze_tokens_drops_overlong_tokens ... ok
+test memory::analyzer::tests::analyzed_text_emits_stemmed_and_raw_forms ... ok
+test memory::analyzer::tests::analyze_tokens_stems_like_the_lance_pipeline ... ok
+test memory::analyzer::tests::analyzed_text_handles_empty_input ... ok
+test memory::analyzer::tests::analyzed_text_keeps_identifiers_whole_for_the_raw_copy ... ok
+test memory::analyzer::tests::build_match_query_ors_quoted_terms ... ok
+test memory::analyzer::tests::build_match_query_never_leaves_a_bare_special_character ... ok
+test memory::analyzer::tests::build_match_query_returns_none_without_usable_terms ... ok
+test memory::analyzer::tests::search_text_never_returns_untokenizable_text ... ok
+test memory::analyzer::tests::escape_term_quotes_terms_fts5_would_misparse ... ok
+test memory::analyzer::tests::simple_tokens_handles_empty_and_whitespace ... ok
+test memory::analyzer::tests::simple_tokens_splits_on_non_alphanumeric ... ok
+test llm::anthropic::auth::tests::proxy_bearer_has_streaming_beta_but_not_oauth ... ok
+test memory::consolidation::tests::over_cap_advice_is_bounded_and_reset_by_a_successful_batch ... ok
+test memory::consolidation::tests::settled_debt_reflects_recomputed_over_cap_state ... ok
+test llm::anthropic::auth::tests::proxy_bearer_uses_bearer_header ... ok
+test memory::consolidation::tests::unknown_partition_is_rejected ... ok
+test memory::consolidation::tests::op_outside_the_partition_is_rejected ... ok
+test memory::consolidation::tests::failing_op_rolls_back_the_whole_batch ... ok
+test memory::consolidation::tests::successful_batch_keeps_absorbed_row_as_provenance ... ok
+test memory::maintenance::tests::run_maintenance_rejects_invalid_configuration_ranges ... ok
+test memory::maintenance::tests::run_maintenance_with_cancel_stops_when_cancel_requested ... ok
+test memory::maintenance::tests::merges_near_duplicate_memories_and_transfers_associations ... ok
+test memory::maintenance::tests::merges_multiple_duplicates_into_one_survivor_in_single_pass ... FAILED
+test memory::render::tests::active_tasks_are_split_out_of_the_memory_store_render ... ok
+test memory::render::tests::cap_cross_evicts_a_batch_down_to_the_watermark ... ok
+test memory::render::tests::first_line_skips_blank_lines ... ok
+test memory::render::tests::cap_eviction_drops_the_oldest_entries_off_the_front ... ok
+test memory::render::tests::count_is_omitted_when_every_entry_renders ... ok
+test memory::render::tests::exhausted_budget_stops_render_without_empty_headers ... ok
+test memory::search::tests::test_curate_results_handles_empty ... ok
+test memory::search::tests::test_curate_results_respects_limit ... ok
+test memory::render::tests::human_anchors_are_excluded_from_the_global_render ... ok
+test memory::render::tests::new_memory_appends_and_preserves_prior_bytes_as_a_prefix ... ok
+test memory::search::tests::test_metadata_search_important ... ok
+test memory::render::tests::per_type_caps_scale_with_the_configured_budget ... ok
+test memory::search::tests::test_rrf_deduplication ... ok
+test memory::search::tests::test_rrf_empty_lists ... ok
+test memory::search::tests::test_rrf_multi_list_ranking ... ok
+test memory::search::tests::test_rrf_single_list ... ok
+test memory::search::tests::test_metadata_search_recent ... ok
+test memory::search::tests::test_metadata_search_typed ... ok
+test memory::search::tests::test_metadata_search_typed_empty ... ok
+test memory::sqlite_index::tests::backfill_fills_rows_that_have_no_search_text_at_all ... ok
+test memory::sqlite_index::tests::backfill_keeps_identifier_tokens_whole_and_searchable ... ok
+test memory::sqlite_index::tests::backfill_leaves_already_analysed_rows_untouched ... ok
+test memory::sqlite_index::tests::backfill_makes_a_legacy_row_findable_by_its_stemmed_term ... ok
+test memory::sqlite_index::tests::backfill_reports_zero_when_nothing_is_pending ... ok
+test memory::sqlite_index::tests::backfill_rewrites_legacy_rows_and_is_idempotent ... ok
+test memory::sqlite_index::tests::vector_blob_round_trips_and_rejects_wrong_lengths ... ok
+test memory::sqlite_index::tests::backfill_skips_content_with_no_tokens_without_breaking_the_index ... ok
+test memory::sqlite_index::tests::chronicle_backfill_rewrites_legacy_checkpoints_and_is_idempotent ... ok
+test memory::sqlite_index::tests::text_search_finds_stem_shared_and_identifier_terms ... ok
+test memory::sqlite_index::tests::vector_search_ranks_by_cosine_and_find_similar_excludes_self ... FAILED
+test memory::store::tests::test_get_by_type_breaks_ties_by_id ... ok
+test memory::store::tests::test_get_sorted_excludes_forgotten ... ok
+test memory::store::tests::test_get_sorted_importance ... ok
+test memory::store::tests::test_get_sorted_most_accessed ... ok
+test memory::store::tests::test_get_sorted_recent ... ok
+test memory::store::tests::watermark_eviction_window_batches_the_front_drop ... ok
+test memory::store::tests::test_get_sorted_respects_limit ... ok
+test memory::store::tests::test_get_sorted_with_type_filter ... ok
+test memory::store::tests::test_save_and_load ... ok
+test memory::working::tests::test_daily_summaries_range ... ok
+test memory::working::tests::test_format_event_line ... ok
+test memory::working::tests::test_format_time_ago ... ok
+test memory::working::tests::test_daily_summary_crud ... ok
+test memory::working::tests::test_builder_api ... ok
+test memory::working::tests::test_event_type_roundtrip ... ok
+test memory::working::tests::test_get_events_after ... ok
+test memory::working::tests::test_intraday_synthesis ... ok
+test memory::working::tests::test_pruning ... ok
+test memory::working::tests::test_record_and_query_events ... ok
+test memory::working::tests::test_render_channel_activity_map_empty ... ok
+test memory::working::tests::test_render_working_memory_disabled ... ok
+test memory::working::tests::test_render_working_memory_empty ... ok
+test memory::working::tests::test_render_working_memory_respects_token_budget ... ok
+test memory::working::tests::test_render_participant_context_uses_humans_and_recent_activity ... ok
+test memory::working::tests::test_render_working_memory_tail_survives_synthesis_starvation ... ok
+test memory::working::tests::test_render_working_memory_with_events ... ok
+test memory::working::tests::test_render_working_memory_with_synthesis_and_tail ... ok
+test messaging::discord::tests::discord_description_normalization_clamps_and_falls_back ... ok
+test messaging::discord::tests::discord_spec_violation_flags_invalid_specs ... ok
+test messaging::discord::tests::discord_specs_satisfy_platform_limits ... ok
+test messaging::discord::tests::discord_validation_drops_no_registry_command ... ok
+test messaging::discord::tests::native_commands_share_message_channel_admission ... ok
+test messaging::discord::tests::test_build_action_row_button_limits ... ok
+test messaging::discord::tests::test_build_embed_limits ... ok
+test messaging::discord::tests::test_build_poll_limits ... ok
+test messaging::discord::tests::test_build_poll_rejects_blank_question ... ok
+test messaging::discord::tests::test_build_poll_rejects_single_non_empty_answer ... ok
+test messaging::discord::tests::test_prepare_rich_message_parts_derives_text_fallback_from_cards ... ok
+test messaging::discord::tests::test_prepare_rich_message_parts_drops_invalid_poll_but_keeps_text ... ok
+test messaging::email::tests::build_imap_search_criterion_defaults_to_all ... ok
+test messaging::email::tests::build_imap_search_criterion_escapes_values ... ok
+test messaging::email::tests::derive_thread_key_prefers_root_reference ... ok
+test messaging::email::tests::extract_message_ids_strips_angle_brackets ... ok
+test messaging::email::tests::is_local_mail_host_accepts_loopback_hosts ... ok
+test messaging::email::tests::is_local_mail_host_rejects_non_loopback_hosts ... ok
+test messaging::email::tests::normalize_email_target_accepts_prefixed_target ... ok
+test messaging::email::tests::normalize_reply_subject_preserves_existing_prefix ... ok
+test messaging::email::tests::normalize_search_folders_falls_back_to_inbox ... ok
+test messaging::email::tests::parse_primary_mailbox_parses_display_name ... ok
+test messaging::email::tests::sort_and_limit_search_hits_orders_globally_newest_first ... ok
+test messaging::manager::broadcast_tests::one_shot_broadcast_does_not_retry_retryable_errors ... ok
+test messaging::manager::broadcast_tests::proactive_broadcast_does_not_retry_permanent_failures ... ok
+test memory::working::tests::test_render_working_memory_with_yesterday ... ok
+test messaging::manager::broadcast_tests::proactive_broadcast_retries_transient_failure_then_succeeds ... ok
+test messaging::manager::broadcast_tests::proactive_broadcast_exhausts_retry_budget_on_transient_failures ... ok
+test messaging::manager::tests::supervisor_retries_after_start_failure_and_stream_end ... ok
+test messaging::mattermost::tests::bot_messages_are_filtered ... ok
+test messaging::mattermost::tests::channel_conversation_id_uses_channel_id ... ok
+test messaging::mattermost::tests::channel_filter_allows_matching_channel ... ok
+test messaging::mattermost::tests::channel_filter_fail_closed_when_team_id_absent ... ok
+test messaging::mattermost::tests::channel_filter_fail_closed_when_team_not_in_filter ... ok
+test messaging::mattermost::tests::channel_filter_rejects_unlisted_channel ... ok
+test messaging::mattermost::tests::channel_name_metadata_set_when_provided ... ok
+test messaging::mattermost::tests::dm_allowed_for_listed_user ... ok
+test messaging::mattermost::tests::dm_blocked_for_unlisted_user ... ok
+test messaging::mattermost::tests::dm_blocked_when_dm_allowed_users_empty ... ok
+test messaging::mattermost::tests::dm_conversation_id_uses_user_id ... ok
+test messaging::mattermost::tests::dm_filter_does_not_affect_channel_messages ... ok
+test messaging::mattermost::tests::mention_sets_flag_when_at_bot_username_in_message ... ok
+test messaging::mattermost::tests::message_id_metadata_is_set ... ok
+test messaging::mattermost::tests::no_mention_flag_when_bot_not_mentioned ... ok
+test messaging::mattermost::tests::non_bot_message_passes_without_filters ... ok
+test messaging::mattermost::tests::recognized_command_counts_as_direct_invocation ... ok
+test messaging::mattermost::tests::sanitize_reaction_colon_wrapped ... ok
+test messaging::mattermost::tests::sanitize_reaction_plain_lowercased ... ok
+test messaging::mattermost::tests::sanitize_reaction_unicode_to_shortcode ... ok
+test messaging::mattermost::tests::sender_display_name_absent_when_not_provided ... ok
+test messaging::mattermost::tests::sender_display_name_set_when_provided ... ok
+test messaging::mattermost::tests::team_filter_allows_matching_team ... ok
+test messaging::mattermost::tests::team_filter_fail_closed_when_team_id_absent ... ok
+test messaging::mattermost::tests::team_filter_rejects_wrong_team ... ok
+test messaging::mattermost::tests::test_split_message_exact_boundary ... ok
+test messaging::mattermost::tests::test_split_message_forced_break ... ok
+test messaging::mattermost::tests::test_split_message_on_newline ... ok
+test messaging::mattermost::tests::test_split_message_on_space ... ok
+test messaging::mattermost::tests::test_split_message_short ... ok
+test messaging::portal::tests::fetch_history_reads_portal_messages_from_db ... ok
+test memory::working::tests::topic_hints_include_branch_semantic_terminal_events ... ok
+test messaging::signal::rpc_error_tests::rpc_params_build_direct_message ... ok
+test memory::working::tests::unknown_event_type_returns_decode_error ... ok
+test messaging::signal::tests::build_metadata_dm ... ok
+test messaging::signal::tests::build_metadata_group ... ok
+test messaging::signal::tests::build_metadata_privacy_mode ... ok
+test messaging::signal::rpc_error_tests::rpc_params_with_attachments ... ok
+test messaging::signal::rpc_error_tests::rpc_params_build_group_message ... ok
+test messaging::signal::tests::build_rpc_params_group ... ok
+test messaging::signal::tests::build_rpc_params_dm ... ok
+test messaging::signal::tests::markdown_conversion_uses_utf16_style_ranges ... ok
+test messaging::signal::tests::parse_recipient_target_dm ... ok
+test messaging::signal::tests::parse_recipient_target_group ... ok
+test messaging::signal::tests::parse_recipient_target_uuid ... ok
+test messaging::signal::tests::parse_sse_envelope_dm ... ok
+test messaging::signal::tests::parse_sse_envelope_empty ... ok
+test messaging::signal::tests::parse_sse_envelope_group ... ok
+test messaging::signal::tests::parse_sse_envelope_no_data_message ... ok
+test messaging::signal::tests::parse_sse_envelope_story_message ... ok
+test messaging::signal::tests::parse_sse_envelope_with_attachments ... ok
+test messaging::signal::tests::build_rpc_params_no_message ... ok
+test messaging::signal::tests::process_envelope_conversation_id_dm ... ok
+test messaging::signal::tests::build_rpc_params_with_attachments ... ok
+test messaging::signal::tests::process_envelope_attachment_only_produces_placeholder ... ok
+test messaging::signal::tests::process_envelope_dm_allowed_wildcard ... ok
+test messaging::signal::tests::process_envelope_dm_allowed ... ok
+test messaging::signal::tests::process_envelope_dm_allowed_by_uuid ... ok
+test messaging::manager::tests::removing_adapter_stops_retry_supervisor ... ok
+test messaging::signal::tests::process_envelope_dm_blocked_when_empty ... ok
+test messaging::signal::tests::process_envelope_drops_empty_message ... ok
+test messaging::signal::tests::process_envelope_dm_rejected ... ok
+test messaging::signal::tests::process_envelope_drops_story_when_configured ... ok
+test messaging::signal::tests::process_envelope_group_allowed_when_configured ... ok
+test messaging::signal::tests::process_envelope_group_allowed_wildcard ... ok
+test messaging::signal::tests::process_envelope_group_blocked_by_default ... ok
+test messaging::slack::tests::sanitize_reaction_name_colon_wrapped_shortcode ... ok
+test messaging::slack::tests::sanitize_reaction_name_colon_wrapped_uppercased ... ok
+test messaging::slack::tests::sanitize_reaction_name_custom_slack_emoji ... ok
+test messaging::slack::tests::sanitize_reaction_name_custom_with_colons ... ok
+test messaging::slack::tests::sanitize_reaction_name_plain_shortcode ... ok
+test messaging::slack::tests::sanitize_reaction_name_unicode_emoji_with_shortcode ... ok
+test messaging::slack::tests::sanitize_reaction_name_unicode_emoji_without_shortcode ... ok
+test messaging::slack::tests::sanitize_reaction_name_unicode_heart ... ok
+test messaging::slack::tests::sanitize_reaction_name_whitespace_trimmed ... ok
+test messaging::slack::tests::slack_subcommands_resolve_only_when_available_on_slack ... ok
+test messaging::slack::tests::slack_subcommands_validate_no_argument_commands ... ok
+test messaging::signal::tests::process_envelope_group_blocked_when_empty ... ok
+test messaging::signal::tests::process_envelope_group_message_rejected_when_sender_not_allowed ... ok
+test messaging::signal::tests::styled_rpc_params_use_single_and_multiple_style_keys ... ok
+test messaging::target::tests::is_valid_instance_name_edge_cases ... ok
+test messaging::target::tests::is_valid_instance_name_invalid_all_digits ... ok
+test messaging::target::tests::is_valid_instance_name_invalid_empty ... ok
+test messaging::target::tests::is_valid_instance_name_invalid_length ... ok
+test messaging::target::tests::is_valid_instance_name_invalid_slack_workspace ... ok
+test messaging::target::tests::is_valid_instance_name_valid ... ok
+test messaging::target::tests::neither_set_resolves_to_nothing ... ok
+test messaging::target::tests::parse_discord_legacy_target ... ok
+test messaging::target::tests::parse_email_target_with_display_name ... ok
+test messaging::target::tests::parse_email_target_with_prefix ... ok
+test messaging::target::tests::parse_named_instance_target_default_adapter ... ok
+test messaging::target::tests::parse_named_instance_target_discord_legacy ... ok
+test messaging::target::tests::parse_named_instance_target_discord_named ... ok
+test messaging::target::tests::parse_named_instance_target_invalid ... ok
+test messaging::target::tests::parse_named_instance_target_slack_legacy ... ok
+test messaging::target::tests::parse_named_instance_target_slack_named ... ok
+test messaging::target::tests::parse_named_instance_target_telegram ... ok
+test messaging::target::tests::parse_signal_group_with_prefix ... ok
+test messaging::target::tests::parse_signal_phone_e164_format ... ok
+test messaging::target::tests::parse_signal_phone_e164_no_plus ... ok
+test messaging::target::tests::parse_signal_phone_with_prefix ... ok
+test messaging::target::tests::parse_signal_target_parts_e164_default ... ok
+test messaging::target::tests::parse_signal_target_parts_e164_named ... ok
+test messaging::target::tests::parse_signal_target_parts_group_default ... ok
+test messaging::target::tests::parse_signal_target_parts_group_named ... ok
+test messaging::target::tests::parse_signal_target_parts_invalid ... ok
+test messaging::target::tests::parse_signal_target_parts_phone_default ... ok
+test messaging::target::tests::parse_signal_target_parts_phone_named ... ok
+test messaging::target::tests::parse_signal_target_parts_uuid_default ... ok
+test messaging::target::tests::parse_signal_target_parts_uuid_named ... ok
+test messaging::target::tests::parse_signal_uuid_with_prefix ... ok
+test messaging::target::tests::parse_slack_conversation_target ... ok
+test messaging::target::tests::parse_telegram_negative_supergroup_id_with_topic_suffix ... ok
+test messaging::target::tests::parse_telegram_negative_supergroup_id_without_topic ... ok
+test messaging::target::tests::home_is_the_fallback_when_no_wake_target ... ok
+test messaging::target::tests::resolve_email_target_falls_back_when_reply_to_invalid ... ok
+test messaging::target::tests::resolve_telegram_broadcast_target_general_no_thread ... ok
+test messaging::target::tests::resolve_telegram_broadcast_target_with_thread ... ok
+test messaging::target::tests::concurrent_adoption_has_exactly_one_winner ... ok
+test messaging::target::tests::implicit_home_never_overwrites_a_claimed_one ... ok
+test messaging::telegram::tests::blockquote ... ok
+test messaging::telegram::tests::bold ... ok
+test messaging::telegram::tests::bold_and_italic_nested ... ok
+test messaging::target::tests::pause_flag_and_reason_move_together ... ok
+test messaging::telegram::tests::code_block_escapes_html ... ok
+test messaging::telegram::tests::code_block_with_language ... ok
+test messaging::telegram::tests::code_block_without_language ... ok
+test messaging::telegram::tests::dispatches_media_by_mime_type ... ok
+test messaging::telegram::tests::headers_render_as_bold ... ok
+test messaging::telegram::tests::html_entities_escaped_in_text ... ok
+test messaging::telegram::tests::inline_code ... ok
+test messaging::telegram::tests::inline_code_escapes_html ... ok
+test messaging::telegram::tests::bold_with_underscores ... ok
+test messaging::telegram::tests::italic_with_underscores ... ok
+test messaging::telegram::tests::italic ... ok
+test messaging::telegram::tests::list_items_pass_through ... ok
+test messaging::telegram::tests::link ... ok
+test messaging::telegram::tests::mixed_formatting ... ok
+test messaging::telegram::tests::plain_text_unchanged ... ok
+test messaging::telegram::tests::multiline_blockquote ... ok
+test messaging::telegram::tests::retries_plain_caption_only_for_parse_entity_errors ... ok
+test messaging::telegram::tests::spoilers_render_as_telegram_spoilers ... ok
+test messaging::telegram::tests::recognized_commands_address_the_receiving_bot ... ok
+test messaging::telegram::tests::strikethrough ... ok
+test messaging::telegram::tests::unclosed_code_block_handled ... ok
+test messaging::traits::tests::classified_platform_broadcast_failures_keep_transient_timeouts_retryable ... ok
+test messaging::telegram::tests::strip_html_tags_and_unescape ... ok
+test messaging::traits::tests::classified_platform_broadcast_failures_mark_permanent_for_not_found_or_forbidden ... ok
+test messaging::traits::tests::typed_broadcast_failures_preserve_explicit_kind ... ok
+test messaging::traits::tests::untyped_broadcast_failures_fall_back_to_heuristic_classification ... ok
+test messaging::traits::tests::unsupported_broadcast_response_helper_returns_permanent_error ... ok
+test messaging::traits::tests::wrapped_typed_broadcast_failures_preserve_explicit_kind ... ok
+test process_registry::tests::guard_drop_is_idempotent ... ok
+test process_registry::tests::guard_removes_pid_from_waited_on_drop ... ok
+test messaging::webhook::tests::file_poll_response_contains_self_contained_payload ... ok
+test process_registry::tests::spawn_managed_registers_pid_and_guard_removes_it ... ok
+test process_registry::tests::spawning_flag_tracks_acquire_release ... ok
+test process_registry::tests::ticket_decrement_is_unconditional ... ok
+test projects::store::tests::create_and_list_project ... ok
+test projects::store::tests::create_repo_and_worktree ... ok
+test messaging::target::tests::unparseable_wake_target_records_rather_than_redirecting_home ... ok
+test messaging::target::tests::wake_target_wins_over_home ... ok
+test projects::store::tests::duplicate_root_path_rejected ... ok
+test prompts::blocks::tests::appending_after_a_dropped_map_records_no_block ... ok
+test prompts::blocks::tests::appending_to_an_unmapped_prompt_records_no_block ... ok
+test prompts::blocks::tests::blocks_tile_the_prompt_without_gaps ... ok
+test prompts::blocks::tests::detects_sentinel_collision ... ok
+test prompts::blocks::tests::empty_injection_contributes_no_block ... ok
+test prompts::blocks::tests::ranges_are_byte_exact_for_multibyte_content ... ok
+test prompts::blocks::tests::repeated_variable_yields_one_block_per_occurrence ... ok
+test prompts::blocks::tests::segments_marked_values_and_template_prose ... ok
+test projects::store::tests::delete_project_cascades ... ok
+test prompts::engine::tests::absent_inputs_produce_no_blocks ... ok
+test prompts::engine::tests::appends_tool_use_enforcement_for_matching_model ... ok
+test prompts::engine::tests::appended_sections_extend_the_map ... ok
+test prompts::engine::tests::autonomy_channel_prompt_renders_per_level ... ok
+test prompts::engine::tests::cap_human_description_cuts_at_section_boundary_past_ceiling ... ok
+test prompts::engine::tests::cap_human_description_ignores_headings_inside_code_fences ... ok
+test prompts::engine::tests::cap_human_description_over_cap_under_ceiling_is_untouched ... ok
+test prompts::engine::tests::cap_human_description_renders_small_docs_in_full ... ok
+test prompts::engine::tests::cap_human_description_without_boundaries_renders_in_full ... ok
+test prompts::engine::tests::autonomy_run_fragments_render ... ok
+test prompts::engine::tests::cortex_chat_prompt_places_transcript_last ... ok
+test prompts::engine::tests::every_mapped_adapter_template_is_registered ... ok
+test prompts::engine::tests::memory_persistence_contract_retry_fragment_renders ... ok
+test projects::store::tests::update_project_status ... ok
+test prompts::engine::tests::renders_session_chronicle_block_when_supplied ... ok
+test prompts::engine::tests::renders_memory_store_and_gates_linked_agents ... ok
+test prompts::engine::tests::memory_persistence_prompt_gates_reflection_section ... ok
+test prompts::engine::tests::skips_tool_use_enforcement_for_non_matching_model ... ok
+test prompts::engine::tests::volatile_blocks_render_after_stable_blocks ... ok
+test prompts::engine::tests::segmented_render_matches_plain_render_byte_for_byte ... ok
+test prompts::engine::tests::static_prompt_maps_to_a_single_template_block ... ok
+test prompts::engine::tests::worker_prompt_maps_sections_and_inlines_scalars ... ok
+test sandbox::detection::tests::test_sandbox_backend_variants ... ok
+test sandbox::tests::test_sandbox_config_defaults ... ok
+test sandbox::tests::test_sandbox_mode_serialization ... ok
+test prompts::engine::tests::worker_prompt_places_status_after_static_sections ... ok
+test sandbox::tests::test_sbpl_profile_traversal_rules ... ok
+test schedule::tests::cron_expression_evaluates_in_timezone ... ok
+test schedule::tests::cron_expression_wins_over_interval ... ok
+test schedule::tests::interval_adds_seconds_to_anchor ... ok
+test schedule::tests::invalid_expression_yields_no_occurrence ... ok
+test schedule::tests::normalize_accepts_five_field_form ... ok
+test schedule::tests::normalize_rejects_wrong_field_count_and_bad_fields ... ok
+test schedule::tests::oversized_interval_yields_no_occurrence ... ok
+test schedule::tests::zero_interval_yields_no_occurrence ... ok
+test schedule::tests::empty_spec_yields_no_occurrence ... ok
+test secrets::scrub::tests::leak_detection_catches_anthropic_key ... ok
+test sandbox::detection::tests::test_backend_detection ... ok
+test secrets::scrub::tests::scrub_leaks_passes_through_clean_text ... ok
+test secrets::scrub::tests::leak_detection_catches_github_token ... ok
+test secrets::scrub::tests::scrub_leaks_redacts_anthropic_key ... ok
+test secrets::scrub::tests::leak_detection_ignores_normal_text ... ok
+test secrets::scrub::tests::scrubber_handles_split_across_chunks ... ok
+test secrets::scrub::tests::scrubber_no_secrets_passes_through ... ok
+test secrets::scrub::tests::scrubber_redacts_exact_match ... ok
+test secrets::scrub::tests::scrubber_split_respects_utf8_boundaries ... ok
+test secrets::scrub::tests::scrub_leaks_redacts_multiple_secrets ... ok
+test secrets::scrub::tests::scrub_leaks_redacts_full_pem_block ... ok
+test secrets::store::tests::auto_categorize_known_patterns ... ok
+test secrets::store::tests::decrypted_secret_redacts_display ... ok
+test secrets::store::tests::agent_scoped_secret_invisible_to_other_agent ... ok
+test secrets::store::tests::agent_scoped_value_shadows_shared_value_with_same_name ... ok
+test process_registry::tests::no_unregistered_raw_spawn_sites ... ok
+test secrets::store::tests::import_overwrites_existing_when_requested ... ok
+test secrets::store::tests::import_skips_existing_without_overwrite ... ok
+test secrets::store::tests::export_import_roundtrip ... ok
+test secrets::store::tests::legacy_unprefixed_keys_migrate_to_shared_on_open ... ok
+test secrets::store::tests::secret_field_name_generation ... ok
+test secrets::store::tests::set_updates_existing_preserves_created_at ... ok
+test secrets::store::tests::system_secret_registry_contains_all_sections ... ok
+test secrets::store::tests::tool_env_vars_returns_only_tool_secrets ... ok
+test secrets::store::tests::tool_secret_names_returns_only_tool_names ... ok
+test secrets::store::tests::unencrypted_set_get_delete ... ok
+test self_awareness::tests::bundled_docs_inventory_is_accessible ... ok
+test self_awareness::tests::latest_release_notes_returns_top_release_sections ... ok
+test self_awareness::tests::normalize_doc_path_strips_group_segments ... ok
+test self_awareness::tests::product_doc_id_maps_index_to_home_or_section_root ... ok
+test self_awareness::tests::product_docs_catalog_matches_embedded_content_assets ... ok
+test self_awareness::tests::truncate_for_prompt_adds_notice_when_content_is_trimmed ... ok
+test settings::store::tests::autonomy_resume_level_round_trips_and_rejects_off ... ok
+test settings::store::tests::invalid_autonomy_resume_level_fails_closed ... ok
+test skills::builtin::tests::load_returns_builtin_skills ... ok
+test skills::builtin::tests::parse_builtin_falls_back_to_dir_name ... ok
+test skills::builtin::tests::parse_builtin_respects_platform_gate ... ok
+test skills::builtin::tests::parse_builtin_skill ... ok
+test skills::builtin::tests::wiki_writing_skill_is_loaded ... ok
+test skills::installer::tests::test_inject_source_repo_into_existing_frontmatter ... ok
+test skills::installer::tests::test_inject_source_repo_malformed_frontmatter ... ok
+test skills::installer::tests::test_inject_source_repo_no_frontmatter ... ok
+test skills::installer::tests::test_inject_source_repo_preserves_delimiter_body_newline ... ok
+test skills::installer::tests::test_inject_source_repo_roundtrip_with_parse ... ok
+test skills::installer::tests::test_inject_source_repo_updates_existing ... ok
+test skills::installer::tests::test_parse_github_spec ... ok
+test skills::installer::tests::test_parse_github_spec_invalid ... ok
+test skills::tests::archive_and_restore_preserve_category ... ok
+test skills::tests::description_md_preferred_over_index_md ... ok
+test skills::tests::nested_categories_load_recursively ... ok
+test skills::tests::remove_builtin_skill_is_rejected ... ok
+test skills::tests::remove_instance_skill_is_rejected ... ok
+test skills::tests::remove_is_case_insensitive ... ok
+test skills::tests::remove_nonexistent_skill_returns_none ... ok
+test skills::tests::remove_workspace_skill_succeeds ... ok
+test skills::tests::repeated_archive_keeps_prior_copies ... ok
+test skills::tests::test_index_description_budget_is_chars_not_bytes ... ok
+test skills::tests::test_index_description_cuts_at_word_boundary ... ok
+test skills::tests::test_index_description_truncated ... ok
+test skills::tests::test_parse_frontmatter_basic ... ok
+test skills::tests::test_parse_frontmatter_lists_and_multiline ... ok
+test skills::tests::test_parse_frontmatter_no_frontmatter ... ok
+test skills::tests::test_parse_frontmatter_quoted_description ... ok
+test skills::tests::test_parse_frontmatter_unknown_platform_tolerated ... ok
+test skills::tests::test_parse_frontmatter_with_metadata_json ... ok
+test skills::tests::test_platform_other_never_matches_host ... ok
+test skills::tests::test_skill_set_channel_prompt ... ok
+test skills::tests::test_skill_set_channel_prompt_empty ... ok
+test skills::tests::test_skill_set_worker_skills ... ok
+test skills::usage::tests::record_installed_clears_agent_conversation_origin ... ok
+test skills::usage::tests::record_installed_overrides_seeded_provenance ... ok
+test skills::usage::tests::record_read_seeds_missing_row_and_reactivates_stale ... ok
+test skills::usage::tests::remove_drops_the_row ... ok
+test skills::usage::tests::seed_is_idempotent_and_preserves_existing_rows ... ok
+test tasks::migration::tests::enrich_metadata_adds_legacy_fields ... ok
+test tasks::migration::tests::enrich_metadata_preserves_delegation_context ... ok
+test tasks::revisions::tests::backfill_on_an_empty_store_writes_nothing ... ok
+test tasks::revisions::tests::baseline_backfill_is_idempotent_and_leaves_task_data_alone ... ok
+test tasks::revisions::tests::binding_a_worker_is_not_a_material_change ... ok
+test tasks::revisions::tests::comments_are_append_only_and_survive_independently_of_edits ... ok
+test tasks::revisions::tests::concurrent_edits_produce_distinct_sequential_revisions ... ok
+test tasks::revisions::tests::create_commits_revision_one_with_the_initial_snapshot ... ok
+test tasks::revisions::tests::deleting_a_task_clears_its_comments_and_revisions ... ok
+test tasks::revisions::tests::diff_reports_only_the_fields_that_changed ... ok
+test tasks::revisions::tests::multi_field_edit_produces_one_revision_and_no_ops_produce_none ... ok
+test tasks::revisions::tests::recent_revisions_return_the_newest_snapshots_oldest_first ... ok
+test tasks::revisions::tests::restore_appends_a_new_revision_and_leaves_history_intact ... ok
+test tasks::revisions::tests::restore_clears_a_goal_the_target_revision_did_not_have ... ok
+test tasks::revisions::tests::restore_clears_fields_the_target_revision_did_not_have ... ok
+test tasks::revisions::tests::restore_reinstates_the_goal_it_recorded ... ok
+test tasks::revisions::tests::restore_respects_status_transition_rules ... ok
+test tasks::revisions::tests::short_and_oversized_comment_bodies_are_rejected ... ok
+test tasks::revisions::tests::stale_writes_fail_with_the_current_revision ... ok
+test tasks::revisions::tests::worktree_backfill_binds_by_the_conventional_name ... ok
+test tasks::revisions::tests::worktree_backfill_ignores_tasks_with_no_matching_worktree ... ok
+test tasks::revisions::tests::worktree_backfill_is_idempotent_and_skips_bound_tasks ... ok
+test tasks::store::tests::at_most_one_stack_parent ... ok
+test tasks::store::tests::can_requeue_in_progress_and_clear_worker_binding ... ok
+test tasks::store::tests::dependencies_reject_self_references_and_cycles ... ok
+test tasks::store::tests::execution_plan_fields_round_trip ... ok
+test tasks::store::tests::execution_plan_resolution_merges_project_defaults ... ok
+test tasks::store::tests::failed_combined_update_preserves_task_and_dependencies ... ok
+test tasks::store::tests::failed_create_with_dependencies_leaves_no_task ... ok
+test tasks::store::tests::global_task_numbers_are_unique_across_agents ... ok
+test tasks::store::tests::list_filters_by_assigned_agent ... ok
+test tasks::store::tests::metadata_updates_deep_merge_nested_objects ... ok
+test tasks::store::tests::operator_override_accepts_status_outside_agent_lifecycle ... ok
+test tasks::store::tests::reassign_task_via_update ... ok
+test tasks::store::tests::rejects_invalid_status_transition ... ok
+test tasks::store::tests::repeated_operator_done_override_preserves_completion_time ... ok
+test tasks::store::tests::unassigned_task_persists_and_falls_back_to_owner ... ok
+test tasks::store::tests::update_with_status_transition_returns_previous_status ... ok
+test tasks::store::tests::update_worker_task_prefers_exact_match_with_duplicate_worker_bindings ... ok
+test tasks::worker_runs::tests::a_committed_outcome_is_recovered_before_the_sweep ... ok
+test tasks::worker_runs::tests::a_live_attempt_is_visible_until_it_ends ... ok
+test tasks::worker_runs::tests::a_restart_closes_a_live_attempt_and_unblocks_the_task ... ok
+test tasks::worker_runs::tests::a_worker_resolves_back_to_its_task ... ok
+test tasks::worker_runs::tests::an_attempt_on_a_missing_task_is_not_recorded ... ok
+test tasks::worker_runs::tests::an_attempt_summary_is_bounded ... ok
+test tasks::worker_runs::tests::board_summaries_are_empty_without_tasks ... ok
+test tasks::worker_runs::tests::board_summaries_cover_only_attempted_tasks ... ok
+test tasks::worker_runs::tests::deleting_a_task_deletes_its_attempts ... ok
+test tasks::worker_runs::tests::every_attempt_is_kept_with_its_outcome ... ok
+test tasks::worker_runs::tests::only_one_run_can_be_live_on_a_task ... ok
+test tasks::worker_runs::tests::prior_attempts_are_bounded ... ok
+test tasks::worker_runs::tests::prior_attempts_name_the_outcomes_and_the_live_run ... ok
+test tasks::worker_runs::tests::prior_attempts_render_nothing_for_a_fresh_task ... ok
+test tasks::worker_runs::tests::re_recording_the_same_worker_reuses_its_attempt ... ok
+test tasks::worker_runs::tests::terminal_state_is_written_once ... ok
+test tests::card_footer_as_str_works ... ok
+test tests::card_footer_deserializes_from_object ... ok
+test tests::card_footer_deserializes_from_object_text_only ... ok
+test tests::card_footer_deserializes_from_object_with_null_icon_url ... ok
+test tests::card_footer_deserializes_from_string ... ok
+test tests::card_footer_deserializes_when_missing ... ok
+test tests::card_footer_deserializes_when_null ... ok
+test tests::card_footer_display_trait_works ... ok
+test tests::routed_sender_surfaces_adapter_failure ... ok
+test tests::routed_sender_waits_for_delivery_confirmation ... ok
+test tools::add_task_comment::tests::a_branch_comment_is_attributed_to_its_agent ... ok
+test tools::add_task_comment::tests::a_worker_can_only_comment_on_the_task_it_is_bound_to ... ok
+test tools::add_task_comment::tests::commenting_on_a_missing_task_fails ... ok
+test tools::autonomy_complete::tests::records_summary_and_actions ... ok
+test tools::autonomy_complete::tests::rejects_completion_while_owned_work_is_active ... ok
+test tools::autonomy_complete::tests::rejects_invalid_action_kind ... ok
+test tools::autonomy_complete::tests::rejects_trivial_summary ... ok
+test tools::chronicle::tests::actions_are_scoped_to_the_constructed_channel ... FAILED
+test tools::chronicle::tests::definition_hides_expand_without_the_capability ... FAILED
+test tools::chronicle::tests::expand_capability_returns_raw_messages ... FAILED
+test tools::chronicle::tests::expand_pages_forward_with_a_cursor_instead_of_a_bigger_limit ... FAILED
+test tools::chronicle::tests::list_reports_the_index ... FAILED
+test tools::chronicle::tests::metadata_capability_refuses_expand ... FAILED
+test tools::chronicle::tests::open_returns_the_full_summary ... FAILED
+test tools::chronicle::tests::open_without_a_checkpoint_explains_how_to_find_one ... FAILED
+test tools::cron::tests::test_normalize_already_qualified_no_rewrite ... ok
+test tools::cron::tests::test_normalize_cron_context_no_rewrite ... ok
+test tools::cron::tests::test_normalize_different_platform_no_rewrite ... ok
+test tools::cron::tests::test_normalize_discord_already_qualified_no_rewrite ... ok
+test tools::cron::tests::test_normalize_discord_named_instance ... ok
+test tools::cron::tests::test_normalize_email_no_rewrite ... ok
+test tools::cron::tests::test_normalize_signal_default_instance_no_rewrite ... ok
+test tools::cron::tests::test_normalize_signal_group_named_instance ... ok
+test tools::cron::tests::test_normalize_signal_named_instance ... ok
+test tools::cron::tests::test_normalize_signal_no_context_no_rewrite ... ok
+test tools::cron::tests::test_normalize_slack_already_qualified_no_rewrite ... ok
+test tools::cron::tests::test_normalize_slack_named_instance ... ok
+test tools::cron::tests::test_normalize_telegram_already_qualified_no_rewrite ... ok
+test tools::cron::tests::test_normalize_telegram_named_instance ... ok
+test tools::cron::tests::test_parse_signal_already_qualified_not_default ... ok
+test tools::email_search::tests::clean_optional_rejects_empty_values ... ok
+test tools::email_search::tests::format_search_criteria_includes_defaults ... ok
+test tools::file::tests::file_edit_blocks_outside_workspace ... ok
+test tools::file::tests::file_edit_not_found ... ok
+test tools::file::tests::file_edit_rejects_ambiguous_match ... ok
+test tools::file::tests::file_edit_replace_all ... ok
+test tools::file::tests::file_edit_replaces_single_occurrence ... ok
+test tools::file::tests::file_read_with_offset_and_limit ... ok
+test tools::file::tests::sandbox_blocks_write_outside_workspace ... ok
+test tools::file::tests::sandbox_disabled_allows_read_outside_workspace ... ok
+test tools::file::tests::sandbox_disabled_allows_write_in_workspace ... ok
+test tools::file::tests::sandbox_disabled_allows_write_outside_workspace ... ok
+test tools::file::tests::sandbox_enabled_rejects_read_outside_workspace ... ok
+test tools::goal_create::tests::goal_create_rejects_invalid_priority ... ok
+test tools::goal_create::tests::goal_create_returns_active_goal ... ok
+test tools::goal_update::tests::goal_update_rejects_invalid_transition ... ok
+test tools::goal_update::tests::goal_update_replaces_notes ... ok
+test tools::goal_update::tests::goal_update_reports_missing_goal ... ok
+test tools::memory_persistence_complete::tests::no_memories_outcome_accepts_short_reason_without_saves ... ok
+test tools::memory_persistence_complete::tests::persists_conversational_events ... ok
+test tools::memory_persistence_complete::tests::saved_outcome_accepts_exact_recorded_ids ... ok
+test tools::memory_persistence_complete::tests::saved_outcome_rejects_fabricated_ids ... ok
+test tools::memory_recall::tests::test_parse_memory_type_invalid ... ok
+test tools::memory_recall::tests::test_parse_memory_type_valid ... ok
+test tools::memory_recall::tests::test_parse_search_mode_invalid ... ok
+test tools::memory_recall::tests::test_parse_search_mode_valid ... ok
+test tools::memory_recall::tests::test_parse_search_sort_invalid ... ok
+test tools::memory_recall::tests::test_parse_search_sort_valid ... ok
+test tools::memory_save::tests::human_anchor_merge_appends_content_and_bumps_updated_at ... ok
+test tools::memory_save::tests::human_anchor_merge_rejects_content_over_the_cap ... ok
+test tools::memory_save::tests::summarize_memory_content_prefers_first_non_empty_line ... ok
+test tools::memory_save::tests::summarize_memory_content_truncates_to_max_chars ... ok
+test tools::reply::tests::allows_slack_blocks_without_secrets ... ok
+test tools::reply::tests::detects_secret_in_serialized_slack_blocks ... ok
+test tools::reply::tests::drops_poll_with_blank_question ... ok
+test tools::reply::tests::drops_poll_with_fewer_than_two_non_empty_answers ... ok
+test tools::reply::tests::leaves_plain_text_unchanged ... ok
+test tools::reply::tests::normalizes_broken_discord_mentions ... ok
+test tools::reply::tests::normalizes_repeated_prefix_and_html_encoded_tokens ... ok
+test tools::reply::tests::reply_schema_exposes_slack_blocks ... ok
+test tools::reply::tests::sanitizes_discord_ids_with_prefix_noise ... ok
+test tools::reply::tests::trims_poll_question_and_answers ... ok
+test tools::route::tests::detached_nonterminal_worker_is_unavailable ... ok
+test tools::route::tests::terminal_worker_reports_its_durable_outcome ... ok
+test tools::route::tests::unknown_worker_is_not_found ... ok
+test tools::send_agent_message::tests::send_agent_message_emits_outcome_event ... ok
+test tools::send_file::tests::adapter_failure_does_not_mark_file_delivered ... ok
+test tools::send_file::tests::sandbox_disabled_allows_file_outside_workspace ... ok
+test tools::send_file::tests::sandbox_enabled_rejects_file_outside_workspace ... ok
+test tools::send_file::tests::validate_workspace_path_accepts_regular_file ... ok
+test tools::send_file::tests::validate_workspace_path_rejects_symlink_components ... ok
+test tools::send_message_to_another_channel::tests::ignores_bare_phone_digits_for_implicit ... ok
+test tools::send_message_to_another_channel::tests::ignores_channel_name_target ... ok
+test tools::send_message_to_another_channel::tests::ignores_explicit_signal_prefix_for_implicit ... ok
+test tools::send_message_to_another_channel::tests::ignores_non_email_prefixed_target ... ok
+test tools::send_message_to_another_channel::tests::ignores_non_signal_prefixed_for_explicit ... ok
+test tools::send_message_to_another_channel::tests::ignores_non_signal_targets_for_implicit ... ok
+test tools::send_message_to_another_channel::tests::parses_bare_email_target ... ok
+test tools::send_message_to_another_channel::tests::parses_display_name_email_target ... ok
+test tools::send_message_to_another_channel::tests::parses_explicit_signal_group_prefixed ... ok
+test tools::send_message_to_another_channel::tests::parses_explicit_signal_phone_e164_prefixed ... ok
+test tools::send_message_to_another_channel::tests::parses_explicit_signal_phone_plus_prefixed ... ok
+test tools::send_message_to_another_channel::tests::parses_explicit_signal_uuid_prefixed ... ok
+test tools::send_message_to_another_channel::tests::parses_implicit_signal_bare_phone_plus ... ok
+test tools::send_message_to_another_channel::tests::parses_implicit_signal_bare_uuid ... ok
+test tools::send_message_to_another_channel::tests::parses_implicit_signal_group_shorthand ... ok
+test tools::send_message_to_another_channel::tests::parses_prefixed_email_target ... ok
+test tools::send_message_to_another_channel::tests::rejects_empty_group_id ... ok
+test tools::send_message_to_another_channel::tests::rejects_malformed_uuid_shorthand ... ok
+test tools::send_message_to_another_channel::tests::rejects_phone_with_non_digits ... ok
+test tools::send_message_to_another_channel::tests::rejects_short_phone_number ... ok
+test tools::send_message_to_another_channel::tests::resolve_signal_adapter_ignores_current_if_not_registered ... ok
+test tools::send_message_to_another_channel::tests::resolve_signal_adapter_returns_signal_when_no_adapters ... ok
+test tools::set_status::tests::interactive_outcome_does_not_claim_terminal_lifecycle ... ok
+test tools::set_status::tests::non_interactive_outcome_claims_completing_once ... ok
+test tools::set_status::tests::outcome_claim_beats_concurrent_cancel_transition ... ok
+test tools::set_status::tests::outcome_output_carries_full_text_while_status_stays_capped ... ok
+test secrets::store::tests::list_metadata_works_in_all_states ... ok
+test tools::set_status::tests::progress_output_has_no_outcome_text ... ok
+test tools::skill_manage::tests::absorbed_into_fails_closed ... ok
+test tools::set_status::tests::stale_set_status_callback_emits_no_event ... ok
+test tools::skill_manage::tests::agent_cannot_touch_installed_or_pinned ... ok
+test tools::skill_manage::tests::agent_delete_archives_and_user_delete_removes ... ok
+test tools::skill_manage::tests::agent_create_records_conversation_origin ... ok
+test tools::skill_manage::tests::agent_patch_requires_prior_read ... ok
+test tools::skill_manage::tests::agent_write_file_requires_prior_read ... ok
+test tools::skill_manage::tests::create_with_category_is_discovered ... ok
+test tools::skill_manage::tests::create_refuses_duplicate_name ... ok
+test tools::skill_manage::tests::resolve_support_path_rails ... ok
+test tools::skill_manage::tests::resolve_support_path_refuses_symlink ... ok
+test tools::skill_manage::tests::pinned_blocks_user_delete ... ok
+test tools::skill_manage::tests::valid_name_accepts_task_class_names ... ok
+test tools::skill_manage::tests::valid_name_rejects_escapes_and_noise ... ok
+test tools::skill_manage::tests::validate_skill_content_enforces_budget_and_body ... ok
+test tools::skill_manage::tests::user_create_records_provenance_and_reloads ... ok
+test tools::skills_search::tests::default_action_is_search ... ok
+test tools::skills_search::tests::default_limit_is_20 ... ok
+test tools::spacebot_docs::tests::invalid_action_returns_structured_failure ... ok
+test tools::spacebot_docs::tests::normalize_start_line_caps_to_total_lines ... ok
+test tools::spacebot_docs::tests::normalize_start_line_for_empty_doc_is_zero ... ok
+test tools::spacebot_docs::tests::read_without_doc_id_returns_structured_failure ... ok
+test tools::spacebot_docs::tests::slice_lines_past_eof_returns_empty_at_eof ... ok
+test tools::spacebot_docs::tests::unknown_doc_returns_structured_failure ... ok
+test tools::spawn_worker::tests::branch_delegation_returns_its_first_worker ... ok
+test tools::spawn_worker::tests::execution_and_reference_task_numbers_are_mutually_exclusive ... ok
+test tools::spawn_worker::tests::spawn_tool_copy_describes_dynamic_task_injection ... ok
+test tools::spawn_worker::tests::task_context_number_schema_describes_reference_only_injection ... ok
+test tools::spawn_worker::tests::task_context_render_marks_board_data_as_runtime_injected ... ok
+test tools::spawn_worker::tests::task_number_normalization_accepts_only_positive_board_numbers ... ok
+test tools::spawn_worker::tests::task_number_schema_exposes_nullable_positive_integer ... ok
+test tools::spawn_worker::tests::task_number_wire_values_preserve_ad_hoc_spawns ... ok
+test tools::skill_manage::tests::write_file_lands_in_support_dir_and_shows_in_linked_files ... ok
+test tools::task_history::tests::diff_defaults_to_the_current_revision ... ok
+test tools::task_history::tests::list_reports_every_revision_newest_first ... ok
+test tools::task_history::tests::restore_requires_a_summary_and_appends_a_revision ... ok
+test tools::task_history::tests::unknown_actions_are_rejected ... ok
+test tools::task_update::tests::act_autonomy_cannot_self_approve_tasks ... ok
+test tools::task_update::tests::suggest_autonomy_cannot_approve_or_execute_tasks ... ok
+test tools::task_create::tests::task_create_emits_task_update_for_new_tasks ... ok
+test tools::task_update::tests::task_update_emits_outcome_for_done_status ... ok
+test tools::task_update::tests::worker_scope_checks_assignment_before_global_task_lookup ... ok
+test tools::tests::allows_normal_plaintext_output ... ok
+test tools::tests::blocks_json_bracket_and_tool_syntax_output ... ok
+test tools::tests::shell_args_defaults_empty_env ... ok
+test tools::tests::shell_args_parses_env_field ... ok
+test tools::tests::shell_args_parses_timeout_as_integer ... ok
+test tools::tests::shell_args_parses_timeout_as_string ... ok
+test tools::tests::shell_args_rejects_non_numeric_string ... ok
+test tools::tests::shell_args_uses_default_when_timeout_missing ... ok
+test tools::tests::shell_rejects_dangerous_env_var ... ok
+test tools::tests::shell_rejects_dangerous_env_var_case_insensitive ... ok
+test tools::tests::shell_rejects_empty_env_var_name ... ok
+test tools::tests::shell_rejects_env_var_name_with_equals ... ok
+test tools::tests::shell_rejects_env_var_with_null_bytes ... ok
+test tools::task_update::tests::task_update_keeps_task_update_event_when_task_was_already_done ... ok
+test tools::tests::streaming_shell_drops_stale_call_id_after_validation_error ... ok
+test tools::tests::streaming_shell_uses_registered_tool_call_id ... ok
+test tools::tests::tool_call_registry_removes_specific_call_id ... ok
+test tools::tests::tool_call_registry_returns_fifo_ids_per_process_and_tool ... ok
+test tools::tests::truncate_at_exact_char_boundary_works ... ok
+test tools::tests::truncate_cjk_does_not_panic ... ok
+test tools::tests::truncate_cyrillic_does_not_panic ... ok
+test tools::tests::truncate_emoji_does_not_panic ... ok
+test tools::tests::truncate_helpers_preserve_utf8_boundaries ... ok
+test tools::tests::truncate_mixed_multibyte_content ... ok
+test tools::tests::truncate_output_multibyte_does_not_panic ... ok
+test tools::web_search::tests::test_clean_html_tags ... ok
+test tools::web_search::tests::test_default_count ... ok
+test update::tests::apply_capability_is_disabled_everywhere ... ok
+test update::tests::test_is_newer_version ... ok
+test wakes::config::tests::reconcile_never_touches_builtin_or_user_rows ... ok
+test wakes::config::tests::reconcile_preserves_schedule_cursors ... ok
+test wakes::config::tests::reconcile_upserts_and_removes_config_rows ... ok
+test wakes::config::tests::rejects_bad_delivery_targets_and_active_hours ... ok
+test wakes::config::tests::rejects_malformed_cron_and_short_intervals ... ok
+test wakes::config::tests::rejects_unknown_event_names ... ok
+test wakes::config::tests::requires_exactly_one_trigger ... ok
+test wakes::config::tests::webhook_trigger_requires_flag_true ... ok
+test wakes::defs::tests::claim_schedule_fire_is_cas_guarded ... ok
+test wakes::defs::tests::due_schedule_wakes_orders_by_cursor ... ok
+test wakes::defs::tests::event_subscribers_filter_by_event_and_enabled ... ok
+test wakes::defs::tests::find_by_webhook_token_matches_token ... ok
+test wakes::defs::tests::insert_if_absent_never_overwrites ... ok
+test wakes::defs::tests::seed_builtin_is_idempotent_and_preserves_tuning ... ok
+test wakes::defs::tests::set_enabled_and_delete ... ok
+test wakes::defs::tests::set_webhook_token_if_absent_never_overwrites ... ok
+test wakes::defs::tests::touch_last_fired_sets_timestamp ... ok
+test wakes::defs::tests::update_tuning_leaves_unset_fields_unchanged ... ok
+test wakes::defs::tests::upsert_and_get_round_trip ... ok
+test wakes::defs::tests::upsert_preserves_schedule_cursor ... ok
+test secrets::store::tests::encryption_lifecycle ... ok
+test wakes::defs::tests::upsert_preserves_webhook_token ... ok
+test wakes::emit::tests::fans_out_to_every_subscriber ... ok
+test wakes::emit::tests::no_subscribers_enqueues_nothing ... ok
+test wakes::emit::tests::repeated_emission_coalesces_on_dedupe_key ... ok
+test wakes::events::tests::rejects_unknown_names ... ok
+test wakes::events::tests::round_trips_every_variant ... ok
+test wakes::events::tests::serde_names_match_as_str ... ok
+test wakes::emit::tests::subscriber_match_enqueues_and_touches_last_fired ... ok
+test wakes::runs::tests::active_owned_branch_prevents_completion ... ok
+test wakes::runs::tests::active_owned_child_prevents_completion ... ok
+test wakes::runs::tests::begin_complete_and_recent_round_trip ... ok
+test wakes::runs::tests::child_completion_race_commits_summary_once ... ok
+test wakes::runs::tests::complete_only_applies_to_running_rows ... ok
+test wakes::runs::tests::last_run_started_at_tracks_newest_run ... ok
+test secrets::store::tests::key_rotation ... ok
+test wakes::runs::tests::stale_running_rows_are_reaped ... ok
+test wakes::runs::tests::startup_reconciliation_closes_only_running_epochs ... ok
+test wakes::runs::tests::try_begin_run_is_single_flight ... ok
+test wakes::schedule::tests::cas_loser_does_not_enqueue ... ok
+test wakes::schedule::tests::due_wake_enqueues_once_and_advances_cursor ... ok
+test wakes::schedule::tests::enqueue_failure_rolls_the_cursor_back ... ok
+test wakes::schedule::tests::initialization_pass_sets_cursor_without_enqueueing ... ok
+test wakes::schedule::tests::outside_active_hours_skips_and_advances_cursor ... ok
+test wakes::schedule::tests::second_pass_same_tick_is_a_no_op ... ok
+test wakes::store::tests::coalesces_pending_duplicates ... ok
+test wakes::store::tests::consume_is_single_claimer ... ok
+test wiki::store::tests::keeps_identifier_characters_the_tokenizer_keeps ... ok
+test wiki::store::tests::sanitizes_fts_operators ... ok
+test zombie_reaper::tests::per_candidate_check_skips_registered_pid ... ok
+test zombie_reaper::tests::per_candidate_check_skips_while_spawning ... ok
+test wakes::store::tests::consumed_events_do_not_block_new_arrivals ... ok
+test zombie_reaper::tests::sweep_does_not_panic ... ok
+test zombie_reaper::tests::sweep_skips_while_spawn_in_flight ... ok
+test zombie_reaper::tests::reap_orphans_once_takes_waited_per_candidate_and_does_not_panic ... ok
+test zombie_reaper::tests::zombie_scan_does_not_panic ... ok
+test wakes::store::tests::enqueue_and_drain ... ok
+test tools::tests::streaming_shell_allows_quiet_noninteractive_command ... ok
+
+failures:
+
+---- agent::chronicle::tests::a_floor_clamped_cut_does_not_strand_a_tool_result stdout ----
+
+thread 'agent::chronicle::tests::a_floor_clamped_cut_does_not_strand_a_tool_result' (3223) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- agent::chronicle::tests::an_absurd_recent_window_does_not_panic_the_view stdout ----
+
+thread 'agent::chronicle::tests::an_absurd_recent_window_does_not_panic_the_view' (3230) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- agent::chronicle::tests::cut_context_trims_live_history_to_the_covered_turn_boundary stdout ----
+
+thread 'agent::chronicle::tests::cut_context_trims_live_history_to_the_covered_turn_boundary' (3234) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- agent::chronicle::tests::trim_is_abandoned_when_the_head_moved_during_the_cut stdout ----
+
+thread 'agent::chronicle::tests::trim_is_abandoned_when_the_head_moved_during_the_cut' (3246) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- agent::chronicle::tests::view_includes_older_checkpoints_outside_the_recent_window stdout ----
+
+thread 'agent::chronicle::tests::view_includes_older_checkpoints_outside_the_recent_window' (3252) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- agent::chronicle::tests::view_is_absent_before_the_first_checkpoint stdout ----
+
+thread 'agent::chronicle::tests::view_is_absent_before_the_first_checkpoint' (3254) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- agent::chronicle::tests::view_is_reproducible_from_durable_state_alone stdout ----
+
+thread 'agent::chronicle::tests::view_is_reproducible_from_durable_state_alone' (3256) panicked at src/agent/chronicle.rs:2001:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::checkpoint_by_id_resolves_without_a_channel stdout ----
+
+thread 'conversation::chronicle::tests::checkpoint_by_id_resolves_without_a_channel' (3600) panicked at src/conversation/chronicle.rs:1592:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::commits_allocate_sequential_boundaries_with_no_gap stdout ----
+
+thread 'conversation::chronicle::tests::commits_allocate_sequential_boundaries_with_no_gap' (3603) panicked at src/conversation/chronicle.rs:1125:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::covering_checkpoint_includes_both_boundaries stdout ----
+
+thread 'conversation::chronicle::tests::covering_checkpoint_includes_both_boundaries' (3606) panicked at src/conversation/chronicle.rs:1522:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::covering_checkpoint_matches_inside_a_same_day_window stdout ----
+
+thread 'conversation::chronicle::tests::covering_checkpoint_matches_inside_a_same_day_window' (3609) panicked at src/conversation/chronicle.rs:1496:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::covering_checkpoint_prefers_the_newest_on_a_shared_boundary stdout ----
+
+thread 'conversation::chronicle::tests::covering_checkpoint_prefers_the_newest_on_a_shared_boundary' (3612) panicked at src/conversation/chronicle.rs:1560:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::duplicate_commit_yields_one_row stdout ----
+
+thread 'conversation::chronicle::tests::duplicate_commit_yields_one_row' (3615) panicked at src/conversation/chronicle.rs:1261:45:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::late_same_second_insert_stays_after_a_committed_boundary stdout ----
+
+thread 'conversation::chronicle::tests::late_same_second_insert_stays_after_a_committed_boundary' (3621) panicked at src/conversation/chronicle.rs:1297:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::logger_writes_after_a_boundary_are_never_stranded stdout ----
+
+thread 'conversation::chronicle::tests::logger_writes_after_a_boundary_are_never_stranded' (3624) panicked at src/conversation/chronicle.rs:1335:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::rollup_commits_and_links_exact_source_checkpoints stdout ----
+
+thread 'conversation::chronicle::tests::rollup_commits_and_links_exact_source_checkpoints' (3636) panicked at src/conversation/chronicle.rs:1155:18:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::rollup_rejects_stale_source_selection stdout ----
+
+thread 'conversation::chronicle::tests::rollup_rejects_stale_source_selection' (3640) panicked at src/conversation/chronicle.rs:1209:14:
+source commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::stale_cut_is_superseded_and_writes_nothing stdout ----
+
+thread 'conversation::chronicle::tests::stale_cut_is_superseded_and_writes_nothing' (3643) panicked at src/conversation/chronicle.rs:1239:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::chronicle::tests::stats_report_unsummarized_tail stdout ----
+
+thread 'conversation::chronicle::tests::stats_report_unsummarized_tail' (3646) panicked at src/conversation/chronicle.rs:1628:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- conversation::history::tests::timeline_places_checkpoints_between_the_messages_they_follow stdout ----
+
+thread 'conversation::history::tests::timeline_places_checkpoints_between_the_messages_they_follow' (3683) panicked at src/conversation/history.rs:3188:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- memory::maintenance::tests::merges_multiple_duplicates_into_one_survivor_in_single_pass stdout ----
+
+thread 'memory::maintenance::tests::merges_multiple_duplicates_into_one_survivor_in_single_pass' (4033) panicked at src/memory/maintenance.rs:740:9:
+assertion `left == right` failed
+  left: 4
+ right: 2
+
+---- memory::sqlite_index::tests::vector_search_ranks_by_cosine_and_find_similar_excludes_self stdout ----
+
+thread 'memory::sqlite_index::tests::vector_search_ranks_by_cosine_and_find_similar_excludes_self' (4107) panicked at src/memory/sqlite_index.rs:1023:9:
+assertion `left == right` failed: find_similar must exclude the source and drop sub-threshold rows
+  left: []
+ right: ["dcbab671-295b-425f-9424-8a747ba0f8af"]
+
+---- tools::chronicle::tests::actions_are_scoped_to_the_constructed_channel stdout ----
+
+thread 'tools::chronicle::tests::actions_are_scoped_to_the_constructed_channel' (4674) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::definition_hides_expand_without_the_capability stdout ----
+
+thread 'tools::chronicle::tests::definition_hides_expand_without_the_capability' (4676) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::expand_capability_returns_raw_messages stdout ----
+
+thread 'tools::chronicle::tests::expand_capability_returns_raw_messages' (4678) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::expand_pages_forward_with_a_cursor_instead_of_a_bigger_limit stdout ----
+
+thread 'tools::chronicle::tests::expand_pages_forward_with_a_cursor_instead_of_a_bigger_limit' (4680) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::list_reports_the_index stdout ----
+
+thread 'tools::chronicle::tests::list_reports_the_index' (4682) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::metadata_capability_refuses_expand stdout ----
+
+thread 'tools::chronicle::tests::metadata_capability_refuses_expand' (4684) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::open_returns_the_full_summary stdout ----
+
+thread 'tools::chronicle::tests::open_returns_the_full_summary' (4686) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+---- tools::chronicle::tests::open_without_a_checkpoint_explains_how_to_find_one stdout ----
+
+thread 'tools::chronicle::tests::open_without_a_checkpoint_explains_how_to_find_one' (4688) panicked at src/tools/chronicle.rs:399:14:
+commit: Other(error returned from database: (code: 1) table channel_chronicle_checkpoints has no column named search_text
+
+Caused by:
+    (code: 1) table channel_chronicle_checkpoints has no column named search_text)
+
+
+failures:
+    agent::chronicle::tests::a_floor_clamped_cut_does_not_strand_a_tool_result
+    agent::chronicle::tests::an_absurd_recent_window_does_not_panic_the_view
+    agent::chronicle::tests::cut_context_trims_live_history_to_the_covered_turn_boundary
+    agent::chronicle::tests::trim_is_abandoned_when_the_head_moved_during_the_cut
+    agent::chronicle::tests::view_includes_older_checkpoints_outside_the_recent_window
+    agent::chronicle::tests::view_is_absent_before_the_first_checkpoint
+    agent::chronicle::tests::view_is_reproducible_from_durable_state_alone
+    conversation::chronicle::tests::checkpoint_by_id_resolves_without_a_channel
+    conversation::chronicle::tests::commits_allocate_sequential_boundaries_with_no_gap
+    conversation::chronicle::tests::covering_checkpoint_includes_both_boundaries
+    conversation::chronicle::tests::covering_checkpoint_matches_inside_a_same_day_window
+    conversation::chronicle::tests::covering_checkpoint_prefers_the_newest_on_a_shared_boundary
+    conversation::chronicle::tests::duplicate_commit_yields_one_row
+    conversation::chronicle::tests::late_same_second_insert_stays_after_a_committed_boundary
+    conversation::chronicle::tests::logger_writes_after_a_boundary_are_never_stranded
+    conversation::chronicle::tests::rollup_commits_and_links_exact_source_checkpoints
+    conversation::chronicle::tests::rollup_rejects_stale_source_selection
+    conversation::chronicle::tests::stale_cut_is_superseded_and_writes_nothing
+    conversation::chronicle::tests::stats_report_unsummarized_tail
+    conversation::history::tests::timeline_places_checkpoints_between_the_messages_they_follow
+    memory::maintenance::tests::merges_multiple_duplicates_into_one_survivor_in_single_pass
+    memory::sqlite_index::tests::vector_search_ranks_by_cosine_and_find_similar_excludes_self
+    tools::chronicle::tests::actions_are_scoped_to_the_constructed_channel
+    tools::chronicle::tests::definition_hides_expand_without_the_capability
+    tools::chronicle::tests::expand_capability_returns_raw_messages
+    tools::chronicle::tests::expand_pages_forward_with_a_cursor_instead_of_a_bigger_limit
+    tools::chronicle::tests::list_reports_the_index
+    tools::chronicle::tests::metadata_capability_refuses_expand
+    tools::chronicle::tests::open_returns_the_full_summary
+    tools::chronicle::tests::open_without_a_checkpoint_explains_how_to_find_one
+
+test result: FAILED. 1427 passed; 30 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.30s
+
+[1m[91merror[0m: test failed, to rerun pass `--lib`
+##[error]Process completed with exit code 101.
