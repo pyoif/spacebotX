@@ -520,6 +520,9 @@ impl MemorySearch {
         // unlike the LanceDB inverted index it cannot be "not built yet". The
         // `match` is kept for the one failure mode FTS5 still has: a malformed
         // MATCH expression, which degrades to vector + graph rather than erroring.
+        // `memory_text_search` filters `forgotten = 0` in SQL so forgotten hits
+        // cannot consume `max_results_per_source` slots; the Rust-side check
+        // below stays as a belt-and-braces filter.
         match crate::memory::sqlite_index::memory_text_search(
             self.store.pool(),
             query,
@@ -545,10 +548,13 @@ impl MemorySearch {
         }
 
         // 2. Vector similarity search via SQLite (exact dot-product scan)
+        // `vector_search_visible` applies the `forgotten = 0` predicate in SQL so
+        // forgotten rows cannot consume `max_results_per_source` slots; the
+        // Rust-side check below stays as a belt-and-braces filter.
         let query_embedding = self.embedding_model.embed_one(query).await?;
         match self
             .embedding_table
-            .vector_search(&query_embedding, config.max_results_per_source)
+            .vector_search_visible(&query_embedding, config.max_results_per_source)
             .await
         {
             Ok(vector_matches) => {
