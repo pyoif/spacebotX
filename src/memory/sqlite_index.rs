@@ -162,6 +162,11 @@ impl MemoryVectorTable {
     /// Exact nearest-neighbour scan. Returns `(memory_id, similarity)` sorted by
     /// similarity descending, where `similarity = dot(query, row)` — the cosine
     /// similarity, since fastembed normalizes both sides.
+    ///
+    /// Forgotten memories are *not* filtered here: maintenance dedup,
+    /// consolidation and graph-linking use this (via [`Self::find_similar`]) and
+    /// must still see them. Recall goes through [`Self::vector_search_visible`],
+    /// which applies the `forgotten = 0` filter in SQL.
     pub async fn vector_search(
         &self,
         query_embedding: &[f32],
@@ -173,6 +178,56 @@ impl MemoryVectorTable {
                 .fetch_all(&self.pool)
                 .await
                 .context("failed to scan memory vectors")?;
+
+        let mut scored: Vec<(String, f32)> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let memory_id: String = row.try_get("memory_id").context("vector row has no id")?;
+            let dim: i64 = row.try_get("dim").context("vector row has no dim")?;
+            let blob: Vec<u8> = row.try_get("embedding").context("vector row has no blob")?;
+
+            let Some(embedding) = decode_vector(&blob, dim as usize) else {
+                tracing::debug!(%memory_id, dim, "skipping vector with an undecodable blob");
+                continue;
+            };
+            if embedding.len() != query_embedding.len() {
+                continue;
+            }
+
+            scored.push((memory_id, dot_product(query_embedding, &embedding)));
+        }
+
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Exact nearest-neighbour scan restricted to memories that are not
+    /// forgotten. Identical to [`Self::vector_search`] except the `forgotten = 0`
+    /// predicate is applied **in SQL**, before the scoring loop and the `limit`
+    /// truncation.
+    ///
+    /// This is what recall uses. Filtering forgotten rows in Rust *after* taking
+    /// the top `limit` (as `hybrid_search` used to) lets forgotten hits consume
+    /// slots in the leg and leaves it under-filled; pushing the predicate down
+    /// means `limit` counts only rows the caller can actually use.
+    pub async fn vector_search_visible(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT v.memory_id AS memory_id, v.dim AS dim, v.embedding AS embedding
+              FROM memory_vectors v
+              JOIN memories m ON m.id = v.memory_id
+             WHERE v.model = ?
+               AND m.forgotten = 0
+            "#,
+        )
+        .bind(EMBEDDING_MODEL_ID)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to scan memory vectors")?;
 
         let mut scored: Vec<(String, f32)> = Vec::with_capacity(rows.len());
         for row in rows {
@@ -378,6 +433,11 @@ impl ChronicleVectorTable {
 /// FTS5 query over `memories_fts`. Returns `(memory_id, score)` sorted by
 /// relevance descending. A query with no usable terms returns no rows rather
 /// than an error — an empty `MATCH` string is an FTS5 syntax error.
+///
+/// The `forgotten = 0` predicate is applied in SQL (joined against `memories`,
+/// the FTS table's content table), so `limit` counts only visible memories.
+/// Filtering forgotten rows out afterwards would let them consume `limit`
+/// slots and leave the leg under-filled.
 pub async fn memory_text_search(
     pool: &SqlitePool,
     query: &str,
@@ -393,6 +453,7 @@ pub async fn memory_text_search(
           FROM memories_fts
           JOIN memories m ON m.rowid = memories_fts.rowid
          WHERE memories_fts MATCH ?
+           AND m.forgotten = 0
          ORDER BY rank
          LIMIT ?
         "#,
@@ -1241,6 +1302,91 @@ mod tests {
                 .await
                 .expect("text search")
                 .is_empty()
+        );
+    }
+
+    /// Forgotten rows must not consume a leg's `limit`. Before the fix both legs
+    /// fetched unfiltered and dropped `forgotten` rows in Rust, so forgotten hits
+    /// took the top `limit` slots and the leg came back empty even though visible
+    /// matches existed.
+    #[tokio::test]
+    async fn forgotten_memories_do_not_consume_search_limit() {
+        let store = MemoryStore::connect_in_memory().await;
+        let pool = store.pool().clone();
+        let table = MemoryVectorTable::new(pool.clone());
+
+        async fn save(store: &MemoryStore, content: &str) -> Memory {
+            let memory = Memory::new(content, MemoryType::Fact);
+            store.save(&memory).await.expect("save memory");
+            memory
+        }
+
+        // Three forgotten memories that outrank the two visible ones on both
+        // legs: FTS gives them identical bm25, and the vector scan sees their
+        // exact query direction (cosine 1.0).
+        let forgotten = [
+            save(&store, "quantum flux capacitor design").await,
+            save(&store, "quantum flux capacitor design").await,
+            save(&store, "quantum flux capacitor design").await,
+        ];
+        for memory in &forgotten {
+            store.forget(&memory.id).await.expect("forget memory");
+        }
+        let visible = save(&store, "quantum flux capacitor notes").await;
+        let visible_two = save(&store, "quantum flux capacitor wiring").await;
+
+        let query = {
+            let mut v = vec![0.0_f32; 384];
+            v[0] = 1.0;
+            v
+        };
+        for memory in &forgotten {
+            table.store(&memory.id, &query).await.expect("store vector");
+        }
+        let visible_vec = {
+            let mut v = vec![0.0_f32; 384];
+            v[0] = 0.9;
+            v[1] = 0.1;
+            v
+        };
+        table
+            .store(&visible.id, &visible_vec)
+            .await
+            .expect("store vector");
+        table
+            .store(&visible_two.id, &visible_vec)
+            .await
+            .expect("store vector");
+
+        // FTS leg: limit=2 must return both visible rows, not zero.
+        let fts = memory_text_search(&pool, "quantum", 2)
+            .await
+            .expect("text search");
+        assert_eq!(
+            fts.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            vec![visible.id.clone(), visible_two.id.clone()],
+            "forgotten FTS hits must not consume the limit"
+        );
+
+        // Vector leg: `vector_search_visible` filters in SQL so `limit` counts
+        // only visible rows; the plain scan still sees everything.
+        let scanned = table.vector_search(&query, 2).await.expect("vector search");
+        assert!(
+            scanned
+                .iter()
+                .all(|(id, _)| forgotten.iter().any(|m| &m.id == id)),
+            "the unfiltered scan is what find_similar relies on: {scanned:?}"
+        );
+
+        let visible_hits = table
+            .vector_search_visible(&query, 2)
+            .await
+            .expect("visible vector search");
+        let ids: Vec<String> = visible_hits.iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![visible.id.clone(), visible_two.id.clone()],
+            "forgotten vectors must not consume the limit"
         );
     }
 }
