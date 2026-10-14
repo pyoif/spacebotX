@@ -436,10 +436,10 @@ impl ChronicleStore {
 
         let insert = sqlx::query(
             "INSERT INTO channel_chronicle_checkpoints \
-             (id, channel_id, seq, level, kind, title, summary, search_text, covers_from_at, covers_to_at, \
+             (id, channel_id, seq, level, kind, title, summary, search_title, search_summary, covers_from_at, covers_to_at, \
               covers_from_message_id, covers_to_message_id, covers_from_seq, covers_to_seq, \
               message_count, token_estimate, rolls_up_from_seq, rolls_up_to_seq, model, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&new.channel_id)
@@ -448,8 +448,10 @@ impl ChronicleStore {
         .bind(new.kind.as_str())
         .bind(&new.title)
         .bind(&new.summary)
-        .bind(crate::memory::sqlite_index::chronicle_search_text(
+        .bind(crate::memory::sqlite_index::chronicle_title_search_text(
             &new.title,
+        ))
+        .bind(crate::memory::sqlite_index::chronicle_summary_search_text(
             &new.summary,
         ))
         .bind(sql_timestamp(new.covers_from_at))
@@ -1072,9 +1074,10 @@ mod tests {
             include_str!("../../migrations/20260211000002_conversations.sql"),
             include_str!("../../migrations/20260809000004_session_chronicles.sql"),
             include_str!("../../migrations/20260810000001_conversation_message_seq.sql"),
-            // The write path stores `search_text` (memory-search migration);
-            // mirror the column for these fixtures.
-            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_text TEXT NOT NULL DEFAULT '';",
+            // The write path stores `search_title`/`search_summary` (memory-search
+            // migration); mirror the columns for these fixtures.
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_title TEXT NOT NULL DEFAULT '';",
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_summary TEXT NOT NULL DEFAULT '';",
         ] {
             sqlx::raw_sql(migration)
                 .execute(&pool)

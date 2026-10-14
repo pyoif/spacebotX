@@ -46,18 +46,34 @@ const BACKFILL_BATCH: i64 = 500;
 /// incompatible vectors). Keep in sync with `fastembed::InitOptions::default()`.
 pub const EMBEDDING_MODEL_ID: &str = "AllMiniLML6V2";
 
-/// Split a checkpoint's indexed text the way the write path does. Mirrors
-/// `MemorySearch::embed_chronicle_checkpoint`'s `format!("{} — {}", title, summary)`
-/// and the migration's `title || ' ' || summary` backfill.
-fn chronicle_source_text(title: &str, summary: &str) -> String {
-    format!("{title} {summary}")
+/// Weight applied to a title match in `bm25(chronicle_fts, ...)`.
+///
+/// The two fields are separate FTS columns so their matches can be weighted
+/// independently. A title hit is a stronger signal about what a span is *about*
+/// than a hit buried in a long summary, and because bm25 also normalizes by
+/// column length, the title's brevity would otherwise *dilute* rather than
+/// sharpen its contribution. `TITLE_BM25_WEIGHT` > `SUMMARY_BM25_WEIGHT` restores
+/// the intended ordering, and keeps the two fields from being mutually
+/// normalized as if they were one document.
+pub const TITLE_BM25_WEIGHT: f64 = 4.0;
+/// Weight applied to a summary match in `bm25(chronicle_fts, ...)`. See
+/// [`TITLE_BM25_WEIGHT`].
+pub const SUMMARY_BM25_WEIGHT: f64 = 1.0;
+
+/// The analysed `search_title` value for a checkpoint's title.
+///
+/// One function per field so the write path, the backfill, and the FTS column
+/// it feeds can never disagree about what is indexed. Splitting the fields is
+/// the point: a title token and a summary token no longer share one document,
+/// so bm25 can weight them apart and no phrase can match across the boundary.
+pub fn chronicle_title_search_text(title: &str) -> String {
+    analyzer::search_text(title)
 }
 
-/// The analysed `search_text` for a chronicle checkpoint — the value the write
-/// path stores on insert and the backfill stores on rewrite. One function so
-/// the two cannot disagree about what is indexed.
-pub fn chronicle_search_text(title: &str, summary: &str) -> String {
-    analyzer::search_text(&chronicle_source_text(title, summary))
+/// The analysed `search_summary` value for a checkpoint's summary. See
+/// [`chronicle_title_search_text`].
+pub fn chronicle_summary_search_text(summary: &str) -> String {
+    analyzer::search_text(summary)
 }
 
 /// Serialize an embedding as little-endian f32 bytes — the format
@@ -401,6 +417,12 @@ pub async fn memory_text_search(
 
 /// FTS5 query over `chronicle_fts`. Returns `(checkpoint_id, score)` sorted by
 /// relevance descending.
+///
+/// The index has two columns (`title`, `summary`); `bm25(chronicle_fts, ?, ?)`
+/// weights them so a title hit outranks an equal summary hit. The weights are
+/// bound as parameters rather than inlined so the values live in one place
+/// ([`TITLE_BM25_WEIGHT`] / [`SUMMARY_BM25_WEIGHT`]) and stay visible to the
+/// planner as constants.
 pub async fn chronicle_text_search(
     pool: &SqlitePool,
     query: &str,
@@ -412,7 +434,7 @@ pub async fn chronicle_text_search(
 
     let rows = sqlx::query(
         r#"
-        SELECT c.id AS id, bm25(chronicle_fts) AS rank
+        SELECT c.id AS id, bm25(chronicle_fts, ?, ?) AS rank
           FROM chronicle_fts
           JOIN channel_chronicle_checkpoints c ON c.rowid = chronicle_fts.rowid
          WHERE chronicle_fts MATCH ?
@@ -420,6 +442,8 @@ pub async fn chronicle_text_search(
          LIMIT ?
         "#,
     )
+    .bind(TITLE_BM25_WEIGHT)
+    .bind(SUMMARY_BM25_WEIGHT)
     .bind(&match_query)
     .bind(limit as i64)
     .fetch_all(pool)
@@ -554,12 +578,20 @@ pub async fn backfill_memory_search_text(pool: &SqlitePool) -> Result<usize> {
     Ok(updated)
 }
 
-/// Rewrite `channel_chronicle_checkpoints.search_text` for every checkpoint
-/// whose stored value is not the analysed one. Returns how many were rewritten.
+/// Rewrite `channel_chronicle_checkpoints.search_title` / `search_summary` for
+/// every checkpoint whose stored values are not the analysed ones. Returns how
+/// many rows were rewritten.
 ///
-/// Mirrors [`backfill_memory_search_text`]; the indexed text is the checkpoint's
-/// title and summary, which is the same text the LanceDB `text` column was
-/// derived from (`MemorySearch::embed_chronicle_checkpoint`).
+/// Mirrors [`backfill_memory_search_text`]. The indexed text is the checkpoint's
+/// title and summary — but as two columns, not one, so this analyses each field
+/// independently ([`chronicle_title_search_text`] /
+/// [`chronicle_summary_search_text`]).
+///
+/// A row is pending when either analysed column is still the raw field (the SQL
+/// backfill copies `title`/`summary` verbatim) or empty. Writing the columns is
+/// what reindexes the row: `chronicle_fts_update` fires on `UPDATE OF
+/// search_title, search_summary` and rebuilds that row's index entry inside the
+/// same transaction.
 pub async fn backfill_chronicle_search_text(pool: &SqlitePool) -> Result<usize> {
     let mut updated = 0usize;
     let mut skipped_unindexable = 0usize;
@@ -569,9 +601,10 @@ pub async fn backfill_chronicle_search_text(pool: &SqlitePool) -> Result<usize> 
         let rows = match &cursor {
             Some(after) => sqlx::query(
                 r#"
-                SELECT id, title, summary, search_text
+                SELECT id, title, summary, search_title, search_summary
                   FROM channel_chronicle_checkpoints
-                 WHERE (search_text = '' OR search_text = title || ' ' || summary)
+                 WHERE (search_title = '' OR search_title = title
+                        OR search_summary = '' OR search_summary = summary)
                    AND id > ?
                  ORDER BY id
                  LIMIT ?
@@ -584,9 +617,10 @@ pub async fn backfill_chronicle_search_text(pool: &SqlitePool) -> Result<usize> 
             .context("failed to list checkpoints pending a search_text backfill")?,
             None => sqlx::query(
                 r#"
-                SELECT id, title, summary, search_text
+                SELECT id, title, summary, search_title, search_summary
                   FROM channel_chronicle_checkpoints
-                 WHERE search_text = '' OR search_text = title || ' ' || summary
+                 WHERE (search_title = '' OR search_title = title
+                        OR search_summary = '' OR search_summary = summary)
                  ORDER BY id
                  LIMIT ?
                 "#,
@@ -610,30 +644,45 @@ pub async fn backfill_chronicle_search_text(pool: &SqlitePool) -> Result<usize> 
             let summary: String = row
                 .try_get("summary")
                 .context("checkpoint row has no summary")?;
-            let stored: String = row
-                .try_get("search_text")
-                .context("checkpoint row has no search_text")?;
+            let stored_title: String = row
+                .try_get("search_title")
+                .context("checkpoint row has no search_title")?;
+            let stored_summary: String = row
+                .try_get("search_summary")
+                .context("checkpoint row has no search_summary")?;
 
-            let analyzed = chronicle_search_text(&title, &summary);
+            let analyzed_title = chronicle_title_search_text(&title);
+            let analyzed_summary = chronicle_summary_search_text(&summary);
 
-            if analyzed.is_empty() {
+            // Both fields tokenless: nothing to index. Leave the raw copies
+            // exactly as the migration left them — writing '' would ask the FTS
+            // delete path to remove a document the index never held.
+            if analyzed_title.is_empty() && analyzed_summary.is_empty() {
                 skipped_unindexable += 1;
                 cursor = Some(id);
                 continue;
             }
 
-            if analyzed == stored {
+            // An analysed value that differs from the stored one is the work
+            // signal. `search_title` for a tokenless title legitimately stays
+            // '' (the migration copy for an empty title), so compare only the
+            // fields that have tokens.
+            let title_settled = analyzed_title.is_empty() || analyzed_title == stored_title;
+            let summary_settled = analyzed_summary.is_empty() || analyzed_summary == stored_summary;
+            if title_settled && summary_settled {
                 cursor = Some(id);
                 continue;
             }
 
             sqlx::query(
                 r#"
-                UPDATE channel_chronicle_checkpoints SET search_text = ?
-                 WHERE id = ? AND (search_text = '' OR search_text = title || ' ' || summary)
+                UPDATE channel_chronicle_checkpoints SET search_title = ?, search_summary = ?
+                 WHERE id = ? AND (search_title = '' OR search_title = title
+                                   OR search_summary = '' OR search_summary = summary)
                 "#,
             )
-            .bind(&analyzed)
+            .bind(&analyzed_title)
+            .bind(&analyzed_summary)
             .bind(&id)
             .execute(pool)
             .await
@@ -941,14 +990,31 @@ mod tests {
             .expect("backfill");
         assert_eq!(updated, 1);
 
-        let written = sqlx::query_scalar::<_, String>(
-            "SELECT search_text FROM channel_chronicle_checkpoints WHERE id = 'cp-1'",
+        // Each field is analysed into its own column: the title's stems land in
+        // `search_title`, the summary's in `search_summary`. The title has no
+        // `memori` token, so a stem query must match through the summary column.
+        let (written_title, written_summary) = sqlx::query_as::<_, (String, String)>(
+            "SELECT search_title, search_summary FROM channel_chronicle_checkpoints WHERE id = 'cp-1'",
         )
         .fetch_one(&pool)
         .await
-        .expect("load search_text");
-        assert!(written.contains("memori"), "missing stem: {written}");
-        assert!(written.contains("Caching layers"), "missing raw: {written}");
+        .expect("load search columns");
+        assert!(
+            written_title.contains("Caching layers"),
+            "missing raw title: {written_title}"
+        );
+        assert!(
+            !written_title.contains("memori"),
+            "title must not absorb summary tokens: {written_title}"
+        );
+        assert!(
+            written_summary.contains("memori"),
+            "missing stem: {written_summary}"
+        );
+        assert!(
+            written_summary.contains("discussed the memories of a cache"),
+            "missing raw summary: {written_summary}"
+        );
 
         assert_eq!(
             backfill_chronicle_search_text(&pool)
@@ -967,6 +1033,76 @@ mod tests {
         .await
         .expect("fts query");
         assert_eq!(found, vec!["cp-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn chronicle_fts_splits_fields_and_weights_title_over_summary() {
+        let store = MemoryStore::connect_in_memory().await;
+        let pool = store.pool().clone();
+
+        // Two checkpoints: one carries the query token in its title, the other
+        // only in its (longer) summary. With per-column bm25 weighting the title
+        // hit must outrank the summary hit.
+        for (id, title, summary) in [
+            (
+                "cp-title",
+                "caching strategy",
+                "a long span about unrelated things",
+            ),
+            (
+                "cp-summary",
+                "unrelated heading",
+                "this span discussed caching at length across many paragraphs and many more words besides",
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO channel_chronicle_checkpoints
+                    (id, channel_id, seq, level, kind, title, summary,
+                     covers_from_at, covers_to_at, message_count, token_estimate)
+                VALUES (?, 'chan-1', 1, 0, 'interval', ?, ?, '2026-01-01', '2026-01-02', 1, 10)
+                "#,
+            )
+            .bind(id)
+            .bind(title)
+            .bind(summary)
+            .execute(&pool)
+            .await
+            .expect("insert checkpoint");
+        }
+
+        backfill_chronicle_search_text(&pool)
+            .await
+            .expect("backfill");
+
+        let hits = chronicle_text_search(&pool, "caching", 10)
+            .await
+            .expect("chronicle text search");
+        let ids: Vec<String> = hits.iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2, "both checkpoints should match: {ids:?}");
+        assert_eq!(
+            ids[0], "cp-title",
+            "a title hit must outrank a summary hit, got {ids:?}"
+        );
+
+        // Per-column filtering is now expressible: restrict the match to the
+        // title column and only the title-carrying checkpoint is returned.
+        let title_only = sqlx::query_scalar::<_, String>(
+            "SELECT c.id FROM chronicle_fts JOIN channel_chronicle_checkpoints c
+                ON c.rowid = chronicle_fts.rowid
+              WHERE chronicle_fts MATCH 'title:\"caching\"'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("title-scoped fts query");
+        assert_eq!(title_only, vec!["cp-title".to_string()]);
+
+        // The index still agrees with its content table after the two-column
+        // rewrite.
+        sqlx::query("INSERT INTO chronicle_fts(chronicle_fts) VALUES('integrity-check')")
+            .execute(&pool)
+            .await
+            .expect("fts integrity-check failed");
     }
 
     #[tokio::test]

@@ -89,7 +89,8 @@ pub fn analyze_tokens(text: &str) -> Vec<String> {
     analyzed_tokens_with(&stemmer, text)
 }
 
-/// The analysed text stored in `memories.search_text` / `chronicle_fts.search_text`.
+/// The analysed text stored in each FTS-indexed column: `memories.search_text`
+/// and the chronicle's `search_title` / `search_summary`.
 ///
 /// Emits `<stemmed tokens> <raw text>`. Both halves are needed — see the module
 /// documentation. Whitespace-only or empty input has no analysed half, so the

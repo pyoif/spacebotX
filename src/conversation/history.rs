@@ -3136,9 +3136,10 @@ mod tests {
             include_str!("../../migrations/20260213000003_process_runs.sql"),
             include_str!("../../migrations/20260809000004_session_chronicles.sql"),
             include_str!("../../migrations/20260810000001_conversation_message_seq.sql"),
-            // The write path stores `search_text` (memory-search migration);
-            // mirror the column for these fixtures.
-            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_text TEXT NOT NULL DEFAULT '';",
+            // The write path stores `search_title`/`search_summary` (memory-search
+            // migration); mirror the columns for these fixtures.
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_title TEXT NOT NULL DEFAULT '';",
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_summary TEXT NOT NULL DEFAULT '';",
         ] {
             sqlx::raw_sql(migration)
                 .execute(&pool)
@@ -3231,9 +3232,10 @@ mod tests {
             include_str!("../../migrations/20260213000003_process_runs.sql"),
             include_str!("../../migrations/20260809000004_session_chronicles.sql"),
             include_str!("../../migrations/20260810000001_conversation_message_seq.sql"),
-            // The write path stores `search_text` (memory-search migration);
-            // mirror the column for these fixtures.
-            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_text TEXT NOT NULL DEFAULT '';",
+            // The write path stores `search_title`/`search_summary` (memory-search
+            // migration); mirror the columns for these fixtures.
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_title TEXT NOT NULL DEFAULT '';",
+            "ALTER TABLE channel_chronicle_checkpoints ADD COLUMN search_summary TEXT NOT NULL DEFAULT '';",
         ] {
             sqlx::raw_sql(migration)
                 .execute(&pool)
