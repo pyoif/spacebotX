@@ -241,6 +241,86 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Delete a memory by ID together with the graph rows that point at it.
+    ///
+    /// `memory_edges`/`memory_nodes` store loose `TEXT` entry ids — deliberately
+    /// no foreign key, so nothing cascades (see
+    /// `20260818000001_memory_graph.sql`). A hard delete therefore has to reclaim
+    /// the entry's graph node and every edge touching it in either direction, or
+    /// they linger as inert orphan rows that nothing ever sweeps. Unlike a
+    /// *forgotten* entry, whose graph rows are still meaningful to recall's
+    /// supersedes walk, a pruned entry is gone for good, so its rows go with it.
+    ///
+    /// Both graph deletes plus the memory delete run in one transaction.
+    /// `delete()` stays the plain single-statement delete for callers that need
+    /// it.
+    pub async fn delete_with_graph_cleanup(&self, id: &str) -> Result<()> {
+        #[cfg(feature = "metrics")]
+        let _timer = {
+            let agent_label = if self.agent_id.is_empty() {
+                "unknown"
+            } else {
+                &self.agent_id
+            };
+            crate::telemetry::Metrics::global()
+                .memory_operation_duration_seconds
+                .with_label_values(&[agent_label, "delete"])
+                .start_timer()
+        };
+
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .with_context(|| format!("failed to start memory delete transaction for {id}"))?;
+
+        // Reclaim the graph rows first: an edge is only as good as its missing
+        // side, so match both endpoints.
+        sqlx::query("DELETE FROM memory_edges WHERE src_entry_id = ? OR dst_entry_id = ?")
+            .bind(id)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("failed to delete graph edges for memory {id}"))?;
+
+        sqlx::query("DELETE FROM memory_nodes WHERE entry_id = ?")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("failed to delete graph node for memory {id}"))?;
+
+        let _result = sqlx::query("DELETE FROM memories WHERE id = ?")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("failed to delete memory {id}"))?;
+
+        transaction
+            .commit()
+            .await
+            .with_context(|| format!("failed to commit memory delete transaction for {id}"))?;
+
+        #[cfg(feature = "metrics")]
+        if _result.rows_affected() > 0 {
+            let agent_label = if self.agent_id.is_empty() {
+                "unknown"
+            } else {
+                &self.agent_id
+            };
+            let metrics = crate::telemetry::Metrics::global();
+            metrics
+                .memory_entry_count
+                .with_label_values(&[agent_label])
+                .dec();
+            metrics
+                .memory_updates_total
+                .with_label_values(&[agent_label, "delete"])
+                .inc();
+        }
+
+        Ok(())
+    }
+
     /// Record access to a memory, updating last_accessed_at and access_count.
     pub async fn record_access(&self, id: &str) -> Result<()> {
         let now = chrono::Utc::now();
