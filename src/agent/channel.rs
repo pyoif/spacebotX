@@ -4503,11 +4503,7 @@ impl Channel {
                 }
 
                 // Record worker completion in working memory.
-                let worker_summary = if result.len() > 200 {
-                    format!("{}...", &result[..200])
-                } else {
-                    result.clone()
-                };
+                let worker_summary = truncate_working_memory_summary(&result);
                 let default_event_type = if success {
                     crate::memory::WorkingMemoryEventType::WorkerCompleted
                 } else {
@@ -5203,8 +5199,43 @@ mod tests {
         compute_listen_mode_invocation, decision_user_id, extract_decision_summary_from_reply,
         format_conversational_event_summary, is_dm_conversation_id, recv_channel_event,
         should_process_event_for_channel, should_send_discord_quiet_mode_ping_ack,
-        should_send_quiet_mode_fallback, worker_outcome_already_consumed,
+        should_send_quiet_mode_fallback, truncate_working_memory_summary,
+        worker_outcome_already_consumed,
     };
+
+    /// The worker-completion summary boundary must never split a multi-byte
+    /// codepoint: production panicked when byte 200 landed inside an em dash
+    /// (bytes 198..201) and inside a CJK char (bytes 199..202).
+    #[test]
+    fn truncate_working_memory_summary_handles_multibyte_at_boundary() {
+        // Em dash straddling byte 200: 199 ASCII bytes + "—" starts at 199.
+        let mut em_dash = "a".repeat(199);
+        em_dash.push('—'); // 3 bytes: 199..202, so byte 200 is mid-char
+        em_dash.push_str(&"b".repeat(50));
+        let out = truncate_working_memory_summary(&em_dash);
+        assert!(out.ends_with("..."));
+        assert!(out.len() <= 204, "bounded output, got {}", out.len());
+
+        // CJK straddling byte 200: 199 ASCII bytes + a 3-byte CJK char.
+        let mut cjk = "x".repeat(199);
+        cjk.push('漢'); // 199..202
+        cjk.push_str(&"y".repeat(50));
+        let out = truncate_working_memory_summary(&cjk);
+        assert!(out.ends_with("..."));
+        assert!(out.len() <= 204, "bounded output, got {}", out.len());
+
+        // A 2-byte char straddling the boundary (199 ASCII + 'é' at 199..201).
+        let mut two_byte = "z".repeat(199);
+        two_byte.push('é');
+        two_byte.push_str(&"w".repeat(50));
+        let out = truncate_working_memory_summary(&two_byte);
+        assert!(out.ends_with("..."));
+        assert!(out.len() <= 204, "bounded output, got {}", out.len());
+
+        // Short content is returned untouched.
+        let short = "héllo — 漢字";
+        assert_eq!(truncate_working_memory_summary(short), short);
+    }
 
     /// R3: the memory store is the FIRST block of the epilogue, above working
     /// memory and status. Position is what makes a memory write cheap — the
