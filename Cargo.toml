@@ -17,11 +17,17 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 
-# LLM / Rig framework
-rig = { version = "0.33", package = "rig-core", features = ["derive"] }
+# LLM / Rig framework — default features are off to avoid rig-core's
+# `reqwest-rustls` (which activates `reqwest/rustls` → aws-lc-rs). The ring +
+# reqwest-native-tls combo keeps the LLM HTTP stack on ring/native-tls.
+rig = { version = "0.33", package = "rig-core", default-features = false, features = ["derive", "reqwest-native-tls"] }
 
-# HTTP clients for LLM providers
-reqwest = { version = "0.13", features = ["json", "stream", "form", "query", "gzip", "multipart"] }
+# HTTP clients for LLM providers.
+# `rustls-no-provider` keeps reqwest off the aws-lc-rs backend (reqwest 0.13's
+# plain `rustls`/`default-tls` features hard-enable `rustls/aws_lc_rs`, which
+# drags in the whole aws-lc-sys C library). The runtime provider is the ring
+# provider installed in src/main.rs (`rustls::crypto::ring::default_provider()`).
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form", "query", "gzip", "multipart", "http2", "charset", "system-proxy", "rustls-no-provider"] }
 
 # Databases
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
@@ -57,8 +63,8 @@ tracing-opentelemetry = "0.32"
 # Configuration
 dirs = "6.0"
 config = "0.15"
-toml = "0.8"
-toml_edit = "0.22"
+toml = "0.9"
+toml_edit = "0.23"
 arc-swap = "1"
 notify = "7"
 
@@ -85,7 +91,7 @@ pin-project = "1"
 
 # Schema validation
 schemars = "1.2"
-rmcp = { version = "1.1", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "1.1", features = ["client", "reqwest-tls-no-provider", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
 
 # Command line (for main.rs)
 clap = { version = "4.5", features = ["derive", "env"] }
